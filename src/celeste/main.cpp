@@ -390,8 +390,6 @@ class CelesteScene : public psyqo::Scene {
     psyqo::Fragments::SimpleFragment<psyqo::Prim::Line> m_lines[2][MAX_LINES];
     psyqo::Fragments::SimpleFragment<psyqo::Prim::TPage> m_tpages[2][MAX_TPAGES];
     psyqo::Fragments::SimpleFragment<psyqo::Prim::FastFill> m_clear[2];
-    bool m_updateToggle = false;
-    uint16_t m_btnLatch = 0; // OR-accumulated button state across frames
     int m_viewOfsY = -16;   // current smooth offset (PS1 pixels, -16 to 0)
     int m_lastAvgY = 120;   // last frame's average sprite Y (PICO-8 coords)
 };
@@ -472,18 +470,15 @@ void CelesteScene::frame() {
     else if (m_viewOfsY > targetOfsY) m_viewOfsY--;
     g_rs.ofsY = m_viewOfsY;
 
-    // Read controller input every frame, OR into latch so presses on
-    // non-update frames aren't lost (game logic runs at 30fps)
+    // Read controller input
     using Pad = psyqo::AdvancedPad;
-    uint16_t curBtn = 0;
-    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Left))   curBtn |= (1 << 0);
-    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Right))  curBtn |= (1 << 1);
-    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Up))     curBtn |= (1 << 2);
-    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Down))   curBtn |= (1 << 3);
-    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Cross))  curBtn |= (1 << 4);  // jump
-    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Circle)) curBtn |= (1 << 5);  // dash
-    m_btnLatch |= curBtn;
-    g_rs.btnState = m_btnLatch;
+    g_rs.btnState = 0;
+    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Left))   g_rs.btnState |= (1 << 0);
+    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Right))  g_rs.btnState |= (1 << 1);
+    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Up))     g_rs.btnState |= (1 << 2);
+    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Down))   g_rs.btnState |= (1 << 3);
+    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Cross))  g_rs.btnState |= (1 << 4);  // jump
+    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Circle)) g_rs.btnState |= (1 << 5);  // dash
 
     // Clear OT
     m_ot[buf].clear();
@@ -496,12 +491,8 @@ void CelesteScene::frame() {
         g_rs.tpageIsFont = false;
     }
 
-    // Game update at 30fps (physics tuned for PICO-8 30fps), draw at 60fps
-    m_updateToggle = !m_updateToggle;
-    if (m_updateToggle) {
-        Celeste_P8_update();
-        m_btnLatch = 0;  // clear latch after game consumed it
-    }
+    // Game update + draw at 60fps (physics constants scaled for 60fps)
+    Celeste_P8_update();
     Celeste_P8_draw();
 
     // Update vertical camera tracking from this frame's sprite positions
