@@ -607,14 +607,14 @@ static bool OBJ_check(OBJ* obj, OBJTYPE type, float ox, float oy) {
 
 static void OBJ_move(OBJ* obj, float ox, float oy) {
 	float amount;
-	// [x] get move amount
-	obj->rem.x += ox;
+	// [x] get move amount (halved for 60fps)
+	obj->rem.x += ox * 0.5;
 	amount = P8flr(obj->rem.x + 0.5);
 	obj->rem.x -= amount;
 	OBJ_move_x(obj, amount,0);
-   
-	// [y] get move amount
-	obj->rem.y += oy;
+
+	// [y] get move amount (halved for 60fps)
+	obj->rem.y += oy * 0.5;
 	amount = P8flr(obj->rem.y + 0.5);
 	obj->rem.y -= amount;
 	OBJ_move_y(obj, amount);
@@ -714,7 +714,7 @@ static void PLAYER_update(OBJ* this) {
 	bool jump = P8btn(k_jump) && !this->p_jump;
 	this->p_jump = P8btn(k_jump);
 	if ((jump)) {
-		this->jbuffer=4;
+		this->jbuffer=8;
 	} else if (this->jbuffer>0) {
 		this->jbuffer-=1;
 	}
@@ -723,7 +723,7 @@ static void PLAYER_update(OBJ* this) {
 	this->p_dash = P8btn(k_dash);
    
 	if (on_ground) {
-		this->grace=6;
+		this->grace=12;
 		if (this->djump<max_djump) {
 			psfx(54);
 			this->djump=max_djump;
@@ -736,8 +736,8 @@ static void PLAYER_update(OBJ* this) {
 	if (this->dash_time > 0) {
 		init_object(OBJ_SMOKE, this->x,this->y);
 		this->dash_time-=1;
-		this->spd.x=appr(this->spd.x,this->dash_target.x,this->dash_accel.x);
-		this->spd.y=appr(this->spd.y,this->dash_target.y,this->dash_accel.y); 
+		this->spd.x=appr(this->spd.x,this->dash_target.x,this->dash_accel.x*0.5);
+		this->spd.y=appr(this->spd.y,this->dash_target.y,this->dash_accel.y*0.5); 
 	} else {
 
 		// move
@@ -755,9 +755,9 @@ static void PLAYER_update(OBJ* this) {
 		}
 
 		if (P8abs(this->spd.x) > maxrun) {
-			this->spd.x=appr(this->spd.x,sign(this->spd.x)*maxrun,deccel);
+			this->spd.x=appr(this->spd.x,sign(this->spd.x)*maxrun,deccel*0.5);
 		} else {
-			this->spd.x=appr(this->spd.x,input*maxrun,accel);
+			this->spd.x=appr(this->spd.x,input*maxrun,accel*0.5);
 		}
 		 
 		//facing
@@ -776,13 +776,13 @@ static void PLAYER_update(OBJ* this) {
 		// wall slide
 		if (input!=0 && OBJ_is_solid(this, input,0) && !OBJ_is_ice(this, input,0)) {
 			maxfall=0.4;
-			if (P8rnd(10)<2) {
+			if (P8rnd(20)<2) {
 				init_object(OBJ_SMOKE,this->x+input*6,this->y);
 			}
 		}
 
 		if (!on_ground) {
-			this->spd.y=appr(this->spd.y,maxfall,gravity);
+			this->spd.y=appr(this->spd.y,maxfall,gravity*0.5);
 		}
 
 		// jump
@@ -816,9 +816,9 @@ static void PLAYER_update(OBJ* this) {
 		if (this->djump>0 && dash) {
 			init_object(OBJ_SMOKE,this->x,this->y);
 			this->djump-=1;
-			this->dash_time=4;
+			this->dash_time=8;
 			has_dashed=true;
-			this->dash_effect_time=10;
+			this->dash_effect_time=20;
 			int v_input=(P8btn(k_up) ? -1 : (P8btn(k_down) ? 1 : 0));
 			if (input!=0) {
 				if (v_input!=0) {
@@ -837,8 +837,8 @@ static void PLAYER_update(OBJ* this) {
 			}
 		
 			psfx(3);
-			freeze=2;
-			shake=6;
+			freeze=4;
+			shake=12;
 			this->dash_target.x=2*sign(this->spd.x);
 			this->dash_target.y=2*sign(this->spd.y);
 			this->dash_accel.x=1.5;
@@ -861,7 +861,7 @@ static void PLAYER_update(OBJ* this) {
 	}
    
 	// animation
-	this->spr_off+=0.25;
+	this->spr_off+=0.125;
 	if (!on_ground) {
 		if (OBJ_is_solid(this, input,0)) {
 			this->spr=5;
@@ -911,7 +911,7 @@ void create_hair(OBJ* obj) {
 }
 
 static void set_hair_color(int djump) {
-	P8pal(8,(djump==1 ? 8 : (djump==2 ?(7+P8flr(((int)(((float)frames)/3.0))%2)*4) : 12)));
+	P8pal(8,(djump==1 ? 8 : (djump==2 ?(7+P8flr(((int)(((float)frames)/6.0))%2)*4) : 12)));
 }
 
 static void draw_hair(OBJ* obj, int facing) {
@@ -921,8 +921,8 @@ static void draw_hair(OBJ* obj, int facing) {
 	int i = 0;
 	do {
 		h = &obj->hair[i++];
-		h->x+=(last_x-h->x)/1.5;
-		h->y+=(last_y+0.5-h->y)/1.5;
+		h->x+=(last_x-h->x)/3.0;
+		h->y+=(last_y+0.5-h->y)/3.0;
 		P8circfill(h->x,h->y,h->size,8);
 		last_x=h->x;
 		last_y=h->y;
@@ -951,11 +951,11 @@ static void PLAYER_SPAWN_update(OBJ* this) {
 	if (this->state==0) {
 		if (this->y < this->target.y+16) {
 			this->state=1;
-			this->delay=3;
+			this->delay=6;
 		}
 	// falling
 	} else if (this->state==1) {
-		this->spd.y+=0.5;
+		this->spd.y+=0.25;
 		if (this->spd.y>0 && this->delay>0) {
 			this->spd.y=0;
 			this->delay-=1;
@@ -964,8 +964,8 @@ static void PLAYER_SPAWN_update(OBJ* this) {
 			this->y=this->target.y;
 			this->spd.x = this->spd.y=0;
 			this->state=2;
-			this->delay=5;
-			shake=5;
+			this->delay=10;
+			shake=10;
 			init_object(OBJ_SMOKE,this->x,this->y+4);
 			P8sfx(5);
 		}
@@ -1007,9 +1007,9 @@ static void SPRING_update(OBJ* this) {
 			hit->spd.x*=0.2;
 			hit->spd.y=-3;
 			hit->djump=max_djump;
-			this->delay=10;
+			this->delay=20;
 			init_object(OBJ_SMOKE,this->x,this->y);
-			 
+
 			// breakable below us
 			OBJ* below=OBJ_collide(this, OBJ_FALL_FLOOR,0,1);
 			if (below != NULL) {
@@ -1028,14 +1028,14 @@ static void SPRING_update(OBJ* this) {
 	if (this->hide_in>0) {
 		this->hide_in-=1;
 		if (this->hide_in<=0) {
-			this->hide_for=60;
+			this->hide_for=120;
 			this->spr=0;
 		}
 	}
 }
 
 static void break_spring(OBJ* obj){
-	obj->hide_in=15;
+	obj->hide_in=30;
 }
 
 //balloon
@@ -1047,7 +1047,7 @@ static void BALLOON_init(OBJ* this) {
 }
 static void BALLOON_update(OBJ* this) {
 	if (this->spr==22) {
-		this->offset+=0.01;
+		this->offset+=0.005;
 #ifdef CELESTE_P8_HACKED_BALLOONS
 		//hacked balloons: constant y coord and hitbox. for TASes
 		this->hitbox=(HITBOX){.x=-1,.y=-3,.w=10,.h=14};
@@ -1060,11 +1060,11 @@ static void BALLOON_update(OBJ* this) {
 			init_object(OBJ_SMOKE,this->x,this->y);
 			hit->djump=max_djump;
 			this->spr=0;
-			this->timer=60;
+			this->timer=120;
 		}
 	} else if (this->timer>0) {
 		this->timer-=1;
-	} else { 
+	} else {
 		psfx(7);
 		init_object(OBJ_SMOKE,this->x,this->y);
 		this->spr=22;
@@ -1094,7 +1094,7 @@ static void FALL_FLOOR_update(OBJ* this) {
 		this->delay-=1;
 		if (this->delay<=0) {
 			this->state=2;
-			this->delay=60;//how long it hides for
+			this->delay=120;//how long it hides for
 			this->collideable=false;
 		}
 	// invisible, waiting to reset
@@ -1113,7 +1113,7 @@ static void FALL_FLOOR_draw(OBJ* this) {
 		if (this->state!=1) {
 			P8spr(23,this->x,this->y,   1,1,false,false);
 		} else {
-			P8spr(23+(15-this->delay)/5,this->x,this->y,   1,1,false,false);
+			P8spr(23+(30-this->delay)/10,this->x,this->y,   1,1,false,false);
 		}
 	}
 }
@@ -1122,7 +1122,7 @@ static void break_fall_floor(OBJ* obj) {
 	if (obj->state==0) {
 		psfx(15);
 		obj->state=1;
-		obj->delay=15;//how long until it falls
+		obj->delay=30;//how long until it falls
 		init_object(OBJ_SMOKE,obj->x,obj->y);
 		OBJ* hit=OBJ_collide(obj, OBJ_SPRING,0,-1);
 		if (hit != NULL) {
@@ -1143,7 +1143,7 @@ static void SMOKE_init(OBJ* this) {
 	this->solids=false;
 }
 static void SMOKE_update(OBJ* this) {
-	this->spr+=0.2;
+	this->spr+=0.1;
 	if (this->spr>=32) {
 		destroy_object(this);
 	}
@@ -1160,14 +1160,14 @@ static void FRUIT_update(OBJ* this) {
 	OBJ* hit=OBJ_collide(this, OBJ_PLAYER,0,0);
 	if (hit!=NULL) {
 		hit->djump=max_djump;
-		sfx_timer=20;
+		sfx_timer=40;
 		P8sfx(13);
 		got_fruit[level_index()] = true;
 		init_object(OBJ_LIFEUP,this->x,this->y);
 		destroy_object(this);
 		return; //LEMON: added return to not modify dead object
 	}
-	this->off+=1;
+	this->off+=0.5;
 	this->y=this->start+P8sin(this->off/40)*2.5f;
 }
 
@@ -1179,7 +1179,7 @@ static void FLY_FRUIT_init(OBJ* this) {
 	this->fly=false;
 	this->step=0.5;
 	this->solids=false;
-	this->sfx_delay=8;
+	this->sfx_delay=16;
 }
 static void FLY_FRUIT_update(OBJ* this) {
 	bool do_destroy_object = false; //LEMON: see PLAYER_update..
@@ -1188,11 +1188,11 @@ static void FLY_FRUIT_update(OBJ* this) {
 		if (this->sfx_delay>0) {
 			this->sfx_delay-=1;
 			if (this->sfx_delay<=0) {
-				sfx_timer=20;
+				sfx_timer=40;
 				P8sfx(14);
 			}
 		}
-		this->spd.y=appr(this->spd.y,-3.5,0.25);
+		this->spd.y=appr(this->spd.y,-3.5,0.125);
 		if (this->y<-16) {
 			do_destroy_object = true;
 		}
@@ -1201,14 +1201,14 @@ static void FLY_FRUIT_update(OBJ* this) {
 		if (has_dashed) {
 			this->fly=true;
 		}
-		this->step+=0.05;
+		this->step+=0.025;
 		this->spd.y=P8sin(this->step)*0.5;
 	}
 	// collect
 	OBJ* hit=OBJ_collide(this, OBJ_PLAYER,0,0);
 	if (hit!=NULL) {
 		hit->djump=max_djump;
-		sfx_timer=20;
+		sfx_timer=40;
 		P8sfx(13);
 		got_fruit[level_index()] = true;
 		init_object(OBJ_LIFEUP,this->x,this->y);
@@ -1234,7 +1234,7 @@ static void FLY_FRUIT_draw(OBJ* this) {
 //lifeup
 static void LIFEUP_init(OBJ* this) {
 	this->spd.y=-0.25;
-	this->duration=30;
+	this->duration=60;
 	this->x-=2;
 	this->y-=4;
 	this->flash=0;
@@ -1247,7 +1247,7 @@ static void LIFEUP_update(OBJ* this) {
 	}
 }
 static void LIFEUP_draw(OBJ* this) {
-	this->flash+=0.5;
+	this->flash+=0.25;
 
 	P8print("1000",this->x-2,this->y,7+((int)this->flash)%2);
 }
@@ -1262,7 +1262,7 @@ static void FAKE_WALL_update(OBJ* this) {
 		hit->spd.x=-sign(hit->spd.x)*1.5;
 		hit->spd.y=-1.5;
 		hit->dash_time=-1;
-		sfx_timer=20;
+		sfx_timer=40;
 		P8sfx(16);
 		//destroy_object(this);
 		init_object(OBJ_SMOKE,this->x,this->y);
@@ -1287,14 +1287,14 @@ static void FAKE_WALL_draw(OBJ* this) {
 	//if_not_fruit=true,
 static void KEY_update(OBJ* this) {
 	int was=P8flr(this->spr);
-	this->spr=9+(P8sin((float)frames/30.0)+0.5)*1;
+	this->spr=9+(P8sin((float)frames/60.0)+0.5)*1;
 	int is=P8flr(this->spr);
 	if (is==10 && is!=was) {
 		this->flip_x=!this->flip_x;
 	}
 	if (OBJ_check(this, OBJ_PLAYER,0,0)) {
 		P8sfx(23);
-		sfx_timer=10;
+		sfx_timer=20;
 		destroy_object(this);
 		has_key=true;
 	}
@@ -1306,7 +1306,7 @@ static void KEY_update(OBJ* this) {
 static void CHEST_init(OBJ* this) {
 	this->x-=4;
 	this->start=this->x;
-	this->timer=20;
+	this->timer=40;
 }
 static void CHEST_update(OBJ* this) {
 	if (has_key) {
@@ -1352,7 +1352,7 @@ static void MESSAGE_draw(OBJ* this) {
 	this->text="-- celeste mountain --#this memorial to those# perished on the climb";
 	if (OBJ_check(this, OBJ_PLAYER,4,0)) {
 		if (this->index<strlen(this->text)) {
-			this->index+=0.5;
+			this->index+=0.25;
 			if (this->index>=this->last+1) {
 				this->last+=1;
 				P8sfx(35);
@@ -1396,16 +1396,16 @@ static void BIG_CHEST_draw(OBJ* this) {
 			this->state=1;
 			init_object(OBJ_SMOKE,this->x,this->y);
 			init_object(OBJ_SMOKE,this->x+8,this->y);
-			this->timer=60;
+			this->timer=120;
 			this->particle_count = 0;
 		}
 		P8spr(96,this->x,this->y,   1,1,false,false);
 		P8spr(97,this->x+8,this->y,  1,1,false,false);
 	} else if (this->state==1) {
 		this->timer-=1;
-		shake=5;
+		shake=10;
 		flash_bg=true;
-		if (this->timer<=45 && this->particle_count<50) {
+		if (this->timer<=90 && this->particle_count<50) {
 			this->particles[this->particle_count++] = (PARTICLE){
 				.x=1+P8rnd(14),
 				.y=0,
@@ -1423,7 +1423,7 @@ static void BIG_CHEST_draw(OBJ* this) {
 		}
 		for (int i = 0; i < this->particle_count; i++) {
 			PARTICLE* p = &this->particles[i];
-			p->y+=p->spd;
+			p->y+=p->spd*0.5;
 			P8line(this->x+p->x,this->y+8-p->y,this->x+p->x,P8min(this->y+8-p->y+p->h,this->y+8),7);
 		}
 	}
@@ -1438,21 +1438,21 @@ static void ORB_init(OBJ* this) {
 	this->particle_count = 0;
 }
 static void ORB_draw(OBJ* this) {
-	this->spd.y=appr(this->spd.y,0,0.5);
+	this->spd.y=appr(this->spd.y,0,0.25);
 	OBJ* hit=OBJ_collide(this, OBJ_PLAYER,0,0);
 	bool destroy_self = false;
 	if (this->spd.y==0 && hit!=NULL) {
-		music_timer=45;
+		music_timer=90;
 		P8sfx(51);
-		freeze=10;
-		shake=10;
+		freeze=20;
+		shake=20;
 		destroy_self = true; //LEMON: to avoid reading off dead object
 		max_djump=2;
 		hit->djump=2;
 	}
    
 	P8spr(102,this->x,this->y,  1,1,false,false);
-	float off=(float)frames/30.f;
+	float off=(float)frames/60.f;
 	for (float i=0; i <= 7; i+=1) {
 		P8circfill(this->x+4+P8cos(off+i/8.f)*8,this->y+4+P8sin(off+i/8.f)*8,1,7);
 	}
@@ -1472,7 +1472,7 @@ static void FLAG_init(OBJ* this) {
 	}
 }
 static void FLAG_draw(OBJ* this) {
-	this->spr=118+P8modulo(((float)frames/5.f), 3);
+	this->spr=118+P8modulo(((float)frames/10.f), 3);
 	P8spr(this->spr,this->x,this->y, 1,1,false,false);
 	if (this->show) {
 		P8rectfill(32,2,96,31,0);
@@ -1490,18 +1490,18 @@ static void FLAG_draw(OBJ* this) {
 		}
 	} else if (OBJ_check(this, OBJ_PLAYER,0,0)) {
 		P8sfx(55);
-		sfx_timer=30;
+		sfx_timer=60;
 		this->show=true;
 	}
 }
 
 //room_title
 static void ROOM_TITLE_init(OBJ* this) {
-	this->delay=5;
+	this->delay=10;
 }
 static void ROOM_TITLE_draw(OBJ* this) {
 	this->delay-=1;
-	if (this->delay<-30) {
+	if (this->delay<-60) {
 		destroy_object(this);
 	} else if (this->delay<0) {
 		P8rectfill(24,58,104,70,0);
@@ -1580,10 +1580,10 @@ static void destroy_object(OBJ* obj) {
 }
 
 static void kill_player(OBJ* obj) {
-	sfx_timer=12;
+	sfx_timer=24;
 	P8sfx(0);
 	deaths+=1;
-	shake=10;
+	shake=20;
 	//destroy_object(obj);
 	int dead_particles_count = 0;
 	for (float dir=0; dir <= 7; dir+=1) {
@@ -1592,7 +1592,7 @@ static void kill_player(OBJ* obj) {
 			.active = true,
 			.x=obj->x+4,
 			.y=obj->y+4,
-			.t=10,
+			.t=20,
 			.spd2=(VEC){
 				.x=P8sin(angle)*3,
 				.y=P8cos(angle)*3
@@ -1608,7 +1608,7 @@ static void kill_player(OBJ* obj) {
 
 static void restart_room() {
 	will_restart=true;
-	delay_restart=15;
+	delay_restart=30;
 }
 
 static void next_room() {
@@ -1679,7 +1679,7 @@ static void load_room(int x, int y) {
 /////////////////////
 
 void Celeste_P8_update() {
-	frames=((frames+1)%30);
+	frames=((frames+1)%60);
 	if (frames==0 && level_index()<30) {
 		seconds=((seconds+1)%60);
 		if (seconds==0) {
@@ -1752,13 +1752,13 @@ void Celeste_P8_update() {
 	if (is_title()) {
 		if (!start_game && (P8btn(k_jump) || P8btn(k_dash))) {
 			P8music(-1, 0, 0);
-			start_game_flash=50;
+			start_game_flash=100;
 			start_game=true;
 			P8sfx(38);
 		}
 		if (start_game) {
 			start_game_flash-=1;
-			if (start_game_flash<=-30) {
+			if (start_game_flash<=-60) {
 				begin_game();
 			}
 		}
@@ -1776,11 +1776,11 @@ void Celeste_P8_draw() {
 	// start game flash
 	if (start_game) {
 		int c=10;
-		if (start_game_flash>10) {
-			if (frames%10<5) {
+		if (start_game_flash>20) {
+			if (frames%20<10) {
 				c=7;
 			}
-		} else if (start_game_flash>5) {
+		} else if (start_game_flash>10) {
 			c=2;
 		} else if (start_game_flash>0) {
 			c=1;
@@ -1800,7 +1800,7 @@ void Celeste_P8_draw() {
 	// clear screen
 	int bg_col = 0;
 	if (flash_bg) {
-		bg_col = frames/5;
+		bg_col = frames/10;
 	} else if (new_bg) {
 		bg_col=2;
 	}
@@ -1810,7 +1810,7 @@ void Celeste_P8_draw() {
 	if (!is_title()) {
 		for (int i = 0; i <= 16; i++) {
 			CLOUD* c = &clouds[i];
-			c->x += c->spd;
+			c->x += c->spd * 0.5;
 			P8rectfill(c->x,c->y,c->x+c->w,c->y+4+(1-c->w/64.0)*12,new_bg ? 14 : 1);
 			if (c->x > 128) {
 				c->x = -c->w;
@@ -1853,9 +1853,9 @@ void Celeste_P8_draw() {
 	// particles
 	for (int i = 0; i <= 24; i++) {
 		PARTICLE* p = &particles[i];
-		p->x += p->spd;
-		p->y += P8sin(p->off);
-		p->off+= P8min(0.05,p->spd/32);
+		p->x += p->spd * 0.5;
+		p->y += P8sin(p->off) * 0.5;
+		p->off+= P8min(0.025,p->spd/64);
 		P8rectfill(p->x,p->y,p->x+p->s,p->y+p->s,p->c);
 		if (p->x>128+4) { 
 			p->x=-4;
@@ -1868,8 +1868,8 @@ void Celeste_P8_draw() {
 	for (int i = 0; i <= 7; i++) {
 		PARTICLE* p = &dead_particles[i];
 		if (p->active) {
-			p->x += p->spd2.x;
-			p->y += p->spd2.y;
+			p->x += p->spd2.x * 0.5;
+			p->y += p->spd2.y * 0.5;
 			p->t -=1;
 			if (p->t <= 0) { p->active = false; }
 			P8rectfill(p->x-p->t/5,p->y-p->t/5,p->x+p->t/5,p->y+p->t/5,14+P8modulo(p->t,2));
@@ -1993,7 +1993,7 @@ static bool spikes_at(float x,float y,int w,int h,float xspd,float yspd) {
 //////////END/////////
 
 void Celeste_P8__DEBUG(void) {
-	if (is_title()) start_game = true, start_game_flash=1;
+	if (is_title()) start_game = true, start_game_flash=2;
 	else next_room();
 }
 
