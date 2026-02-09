@@ -1,11 +1,16 @@
 # psx-lab - PS1 Development Playground
 # Uses PSYQo (C++20) via nugget submodule
 
-.PHONY: all clean
+PROJECTS = room_test celeste
 
-all:
-	@$(MAKE) -C src BUILD=$(BUILD)
+.PHONY: all clean $(PROJECTS)
+
+all: $(PROJECTS)
+
+$(PROJECTS):
+	@echo "Building $@..."
+	@$(MAKE) -C src/$@ BUILD=$(BUILD)
 
 clean:
-	@$(MAKE) -C src clean
+	@for p in $(PROJECTS); do $(MAKE) -C src/$$p clean; done
 	@rm -rf release/*
