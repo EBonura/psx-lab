@@ -1,0 +1,6 @@
+*.o
+*.dep
+*.elf
+*.map
+*.ps-exe
+release/
