@@ -391,6 +391,7 @@ class CelesteScene : public psyqo::Scene {
     psyqo::Fragments::SimpleFragment<psyqo::Prim::TPage> m_tpages[2][MAX_TPAGES];
     psyqo::Fragments::SimpleFragment<psyqo::Prim::FastFill> m_clear[2];
     bool m_updateToggle = false;
+    uint16_t m_btnLatch = 0; // OR-accumulated button state across frames
     int m_viewOfsY = -16;   // current smooth offset (PS1 pixels, -16 to 0)
     int m_lastAvgY = 120;   // last frame's average sprite Y (PICO-8 coords)
 };
@@ -471,22 +472,18 @@ void CelesteScene::frame() {
     else if (m_viewOfsY > targetOfsY) m_viewOfsY--;
     g_rs.ofsY = m_viewOfsY;
 
-    // Read controller input
-    // PICO-8: 0=left, 1=right, 2=up, 3=down, 4=jump(O), 5=dash(X)
-    g_rs.btnState = 0;
+    // Read controller input every frame, OR into latch so presses on
+    // non-update frames aren't lost (game logic runs at 30fps)
     using Pad = psyqo::AdvancedPad;
-    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Left))
-        g_rs.btnState |= (1 << 0);
-    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Right))
-        g_rs.btnState |= (1 << 1);
-    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Up))
-        g_rs.btnState |= (1 << 2);
-    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Down))
-        g_rs.btnState |= (1 << 3);
-    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Cross))
-        g_rs.btnState |= (1 << 4);  // jump
-    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Circle))
-        g_rs.btnState |= (1 << 5);  // dash
+    uint16_t curBtn = 0;
+    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Left))   curBtn |= (1 << 0);
+    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Right))  curBtn |= (1 << 1);
+    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Up))     curBtn |= (1 << 2);
+    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Down))   curBtn |= (1 << 3);
+    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Cross))  curBtn |= (1 << 4);  // jump
+    if (app.m_pad.isButtonPressed(Pad::Pad::Pad1a, Pad::Circle)) curBtn |= (1 << 5);  // dash
+    m_btnLatch |= curBtn;
+    g_rs.btnState = m_btnLatch;
 
     // Clear OT
     m_ot[buf].clear();
@@ -503,6 +500,7 @@ void CelesteScene::frame() {
     m_updateToggle = !m_updateToggle;
     if (m_updateToggle) {
         Celeste_P8_update();
+        m_btnLatch = 0;  // clear latch after game consumed it
     }
     Celeste_P8_draw();
 
@@ -511,13 +509,18 @@ void CelesteScene::frame() {
         m_lastAvgY = g_rs.sprYSum / g_rs.sprYCount;
     }
 
-    // Clear screen and chain OT
-    psyqo::Color bg;
-    bg.r = 0;
-    bg.g = 0;
-    bg.b = 0;
-    app.gpu().getNextClear(m_clear[buf].primitive, bg);
-    app.gpu().chain(m_clear[buf]);
+    // Detect freeze frames: if draw produced no visible primitives (only the
+    // initial TPage), skip the screen clear so the back buffer retains the
+    // last drawn content — matching PICO-8's retained-mode display behavior.
+    bool drawEmpty = (g_rs.spriteIdx == 0 && g_rs.rectIdx == 0 && g_rs.lineIdx == 0);
+    if (!drawEmpty) {
+        psyqo::Color bg;
+        bg.r = 0;
+        bg.g = 0;
+        bg.b = 0;
+        app.gpu().getNextClear(m_clear[buf].primitive, bg);
+        app.gpu().chain(m_clear[buf]);
+    }
     app.gpu().chain(m_ot[buf]);
 }
 
