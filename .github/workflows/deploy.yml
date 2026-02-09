@@ -22,12 +22,11 @@ jobs:
 
       - name: Install MIPS cross-compiler
         run: |
-          curl -L -o toolchain.zip https://static.grumpycoder.net/pixel/mips/g++-mipsel-none-elf-14.2.0.zip
-          unzip -q toolchain.zip -d /tmp/mipsel
-          echo "/tmp/mipsel/bin" >> $GITHUB_PATH
+          sudo apt-get update
+          sudo apt-get install -y gcc-mipsel-linux-gnu g++-mipsel-linux-gnu binutils-mipsel-linux-gnu
 
       - name: Build celeste
-        run: make -C src/celeste deploy BUILD=Release
+        run: make -C src/celeste deploy BUILD=Release PREFIX=mipsel-linux-gnu FORMAT=elf32-littlemips
 
       - name: Deploy to itch.io
         env:
