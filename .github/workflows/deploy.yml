@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   build-and-deploy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,10 +23,35 @@ jobs:
       - name: Install MIPS cross-compiler
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-mipsel-linux-gnu g++-mipsel-linux-gnu binutils-mipsel-linux-gnu
+          sudo apt-get install -y gcc-14-mipsel-linux-gnu g++-14-mipsel-linux-gnu binutils-mipsel-linux-gnu
+          sudo ln -sf /usr/bin/mipsel-linux-gnu-gcc-14 /usr/local/bin/mipsel-linux-gnu-gcc
+          sudo ln -sf /usr/bin/mipsel-linux-gnu-g++-14 /usr/local/bin/mipsel-linux-gnu-g++
+          sudo ln -sf /usr/bin/mipsel-linux-gnu-gcc-ar-14 /usr/local/bin/mipsel-linux-gnu-gcc-ar
+
+      - name: Patch libgcc for bare-metal
+        run: |
+          # The mipsel-linux-gnu libgcc.a uses abicalls (PIC) which is incompatible
+          # with bare-metal PS1 code (-mno-abicalls). Replace it with the bare-metal
+          # libgcc.a from PSn00bSDK, converted to elf32-tradlittlemips format.
+          curl -sL -o /tmp/psn00b.zip https://github.com/Lameguy64/PSn00bSDK/releases/download/v0.24/gcc-mipsel-none-elf-12.3.0-linux.zip
+          unzip -q /tmp/psn00b.zip -d /tmp/psn00b
+          mkdir /tmp/libgcc-convert && cd /tmp/libgcc-convert
+          ar x /tmp/psn00b/lib/gcc/mipsel-none-elf/12.3.0/libgcc.a
+          for f in *.o; do
+            mipsel-linux-gnu-objcopy -O elf32-tradlittlemips "$f" "$f.new" && mv "$f.new" "$f"
+          done
+          ar rcs /tmp/libgcc_baremetal.a *.o
+          LIBGCC_PATH=$(mipsel-linux-gnu-gcc -print-libgcc-file-name)
+          sudo cp /tmp/libgcc_baremetal.a "$LIBGCC_PATH"
 
       - name: Build celeste
-        run: make -C src/celeste deploy BUILD=Release PREFIX=mipsel-linux-gnu FORMAT=elf32-littlemips
+        run: make -C src/celeste deploy BUILD=Release
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: celeste-ps-exe
+          path: release/celeste.ps-exe
 
       - name: Deploy to itch.io
         env:
