@@ -63,6 +63,8 @@ Music and sound effects are synthesized in real-time by the PS1 SPU, not pre-rec
 - **Effects**: Slide, vibrato, drop, fade in/out, arpeggio (fast/slow)
 - **Timing**: Fixed-point accumulator matching PICO-8's 183 samples/note at 22050 Hz
 
+**Note:** Audio is functional but not yet 100% accurate to the PICO-8 original. Waveform shapes, timing, and effects are approximate. Further tuning is needed.
+
 ## Asset Pipeline
 
 Two Python scripts in `tools/` convert source assets to PS1-ready C headers:
