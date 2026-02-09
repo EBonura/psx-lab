@@ -13,6 +13,7 @@
 #include <stdio.h>
 
 #include "celeste.h"
+#include "platform.h"
 
 
 #ifdef CELESTE_P8_FIXEDP
@@ -140,9 +141,6 @@ static void next_room(void);
 static void psfx(int num);
 static void restart_room(void);
 
-#define bool Celeste_P8_bool_t
-#define false 0
-#define true 1
 
 static float clamp(float val, float a, float b);
 static float appr(float val, float target, float amount);
@@ -155,60 +153,9 @@ static int tile_at(int x,int y);
 static bool spikes_at(float x,float y,int w,int h,float xspd,float yspd);
 
 
-//exported /imported functions
-static Celeste_P8_cb_func_t Celeste_P8_call = NULL;
-
-//exported
-void Celeste_P8_set_call_func(Celeste_P8_cb_func_t func) {
-	Celeste_P8_call = func;
-}
 static void pico8_srand(unsigned seed);
 void Celeste_P8_set_rndseed(unsigned seed) {
 	pico8_srand(seed);
-}
-
-///////PICO-8 functions
-static inline void P8music(int track, int fade, int mask) {
-	Celeste_P8_call(CELESTE_P8_MUSIC, track, fade, mask);
-}
-static inline void P8spr(int sprite, int x, int y, int cols, int rows, bool flipx, bool flipy) {
-	Celeste_P8_call(CELESTE_P8_SPR, sprite, x, y, cols, rows, flipx, flipy);
-}
-static inline bool P8btn(int b) {
-	return Celeste_P8_call(CELESTE_P8_BTN, b);
-}
-static inline void P8sfx(int id) {
-	Celeste_P8_call(CELESTE_P8_SFX, id);
-}
-static inline void P8pal(int a, int b) {
-	Celeste_P8_call(CELESTE_P8_PAL, a, b);
-}
-static inline void P8pal_reset() {
-	Celeste_P8_call(CELESTE_P8_PAL_RESET);
-}
-static inline void P8circfill(int x, int y, int r, int c) {
-	Celeste_P8_call(CELESTE_P8_CIRCFILL, x,y,r,c);
-}
-static inline void P8rectfill(int x, int y, int x2, int y2, int c) {
-	Celeste_P8_call(CELESTE_P8_RECTFILL, x,y,x2,y2,c);
-}
-static inline void P8print(const char* str, int x, int y, int c) {
-	Celeste_P8_call(CELESTE_P8_PRINT, str,x,y,c);
-}
-static inline void P8line(int x, int y, int x2, int y2, int c) {
-	Celeste_P8_call(CELESTE_P8_LINE, x,y,x2,y2,c);
-}
-static inline int P8mget(int x, int y) {
-	return Celeste_P8_call(CELESTE_P8_MGET, x,y);
-}
-static inline bool P8fget(int t, int f) {
-	return Celeste_P8_call(CELESTE_P8_FGET, t,f);
-}
-static inline void P8camera(int x, int y) {
-	Celeste_P8_call(CELESTE_P8_CAMERA, x, y);
-}
-static inline void P8map(int mx, int my, int tx, int ty, int mw, int mh, int mask) {
-	Celeste_P8_call(CELESTE_P8_MAP, mx, my, tx, ty, mw, mh, mask);
 }
 //these values dont matter as set_rndseed should be called before init, as long as they arent both zero
 static unsigned rnd_seed_lo = 0, rnd_seed_hi = 1;
@@ -359,10 +306,6 @@ static void PRELUDE() {
 }
 
 void Celeste_P8_init() { //identifiers beginning with underscores are reserved in C
-	if (!Celeste_P8_call) {
-		fprintf(stderr, "Warning: Celeste_P8_call is NULL.. have you called Celeste_P8_set_call_func()?\n");
-	}
-
 	PRELUDE();
 
 	title_screen();
