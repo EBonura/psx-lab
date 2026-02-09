@@ -1,4 +1,3 @@
-#include <stdarg.h>
 #include <stddef.h>
 
 #include "psyqo/application.hh"
@@ -23,6 +22,7 @@ extern "C" {
 
 #include "font_data.h"
 #include "gfx_data.h"
+#include "psx_audio.h"
 
 namespace {
 
@@ -47,7 +47,7 @@ constexpr int16_t FONT_VRAM_W = 64, FONT_VRAM_H = 170;  // 256x170 4bpp = 64 16-
 constexpr int16_t SPRITE_CLUT_X = 0, SPRITE_CLUT_Y = 496;
 constexpr int16_t TEXT_CLUT_X0 = 0, TEXT_CLUT_Y = 497;
 
-// --- Render state (accessible from C callback) ---
+// --- Render state ---
 struct RenderState {
     psyqo::GPU* gpu;
     psyqo::OrderingTable<OT_SIZE>* ot;
@@ -136,241 +136,181 @@ psyqo::Rect makeRect(int16_t x, int16_t y, int16_t w, int16_t h) {
     return r;
 }
 
-// --- PICO-8 callback ---
+}  // namespace
 
-int pico8emu(CELESTE_P8_CALLBACK_TYPE call, ...) {
-    va_list args;
-    int ret = 0;
-    va_start(args, call);
+// --- Platform functions (called directly by celeste.cpp) ---
 
-#define INT_ARG() va_arg(args, int)
-#define BOOL_ARG() (Celeste_P8_bool_t) va_arg(args, int)
+extern "C" {
 
-    switch (call) {
-        case CELESTE_P8_MUSIC: {
-            INT_ARG();
-            INT_ARG();
-            INT_ARG();
-        } break;
+void P8music(int track, int fade, int mask) { audio_music(track, fade, mask); }
+void P8sfx(int id) { audio_sfx(id); }
 
-        case CELESTE_P8_SFX: {
-            INT_ARG();
-        } break;
-
-        case CELESTE_P8_SPR: {
-            int sprite = INT_ARG();
-            int x = INT_ARG();
-            int y = INT_ARG();
-            int cols = INT_ARG();
-            int rows = INT_ARG();
-            int flipx = BOOL_ARG();
-            int flipy = BOOL_ARG();
-            (void)cols;
-            (void)rows;
-            (void)flipx;
-            (void)flipy;
-
-            if (sprite >= 0 && g_rs.spriteIdx < MAX_SPRITES) {
-                ensureGfxTPage();
-                auto& f = g_rs.sprites[g_rs.spriteIdx++];
-                int screenY = y - g_rs.camY;
-                f.primitive.position.x = (x - g_rs.camX) * SCALE + OFS_X;
-                f.primitive.position.y = screenY * SCALE + g_rs.ofsY;
-                f.primitive.texInfo.u = (sprite % 16) * 16;
-                f.primitive.texInfo.v = (sprite / 16) * 16;
-                f.primitive.texInfo.clut = spriteClut();
-                g_rs.ot->insert(f, g_rs.zCounter--);
-                g_rs.sprYSum += screenY;
-                g_rs.sprYCount++;
-            }
-        } break;
-
-        case CELESTE_P8_BTN: {
-            int b = INT_ARG();
-            ret = (g_rs.btnState & (1 << b)) ? 1 : 0;
-        } break;
-
-        case CELESTE_P8_PAL: {
-            int a = INT_ARG();
-            int b = INT_ARG();
-            if (a >= 0 && a < 16 && b >= 0 && b < 16) {
-                g_rs.pal[a] = b;
-            }
-        } break;
-
-        case CELESTE_P8_PAL_RESET: {
-            for (int i = 0; i < 16; i++) g_rs.pal[i] = i;
-        } break;
-
-        case CELESTE_P8_CIRCFILL: {
-            int cx = INT_ARG() - g_rs.camX;
-            int cy = INT_ARG() - g_rs.camY;
-            int r = INT_ARG();
-            int col = INT_ARG();
-
-            auto color = getDrawColor(col);
-            int px = cx * SCALE + OFS_X;
-            int py = cy * SCALE + g_rs.ofsY;
-
-            if (r <= 1) {
-                addRect(px - SCALE, py, SCALE * 3, SCALE, color);
-                addRect(px, py - SCALE, SCALE, SCALE * 3, color);
-            } else if (r <= 2) {
-                addRect(px - SCALE * 2, py - SCALE, SCALE * 5, SCALE * 3, color);
-                addRect(px - SCALE, py - SCALE * 2, SCALE * 3, SCALE * 5, color);
-            } else if (r <= 3) {
-                addRect(px - SCALE * 3, py - SCALE, SCALE * 7, SCALE * 3, color);
-                addRect(px - SCALE, py - SCALE * 3, SCALE * 3, SCALE * 7, color);
-                addRect(px - SCALE * 2, py - SCALE * 2, SCALE * 5, SCALE * 5, color);
-            } else {
-                // Midpoint circle
-                int f = 1 - r, ddFx = 1, ddFy = -2 * r;
-                int ix = 0, iy = r;
-                int rs = r * SCALE;
-                addRect(px - rs, py, rs * 2 + SCALE, SCALE, color);
-                addRect(px, py - rs, SCALE, rs * 2 + SCALE, color);
-                while (ix < iy) {
-                    if (f >= 0) {
-                        iy--;
-                        ddFy += 2;
-                        f += ddFy;
-                    }
-                    ix++;
-                    ddFx += 2;
-                    f += ddFx;
-                    int sx = ix * SCALE, sy = iy * SCALE;
-                    addRect(px - sx, py + sy, sx * 2 + SCALE, SCALE, color);
-                    addRect(px - sx, py - sy, sx * 2 + SCALE, SCALE, color);
-                    addRect(px - sy, py + sx, sy * 2 + SCALE, SCALE, color);
-                    addRect(px - sy, py - sx, sy * 2 + SCALE, SCALE, color);
-                }
-            }
-            g_rs.zCounter--;
-        } break;
-
-        case CELESTE_P8_PRINT: {
-            const char* str = va_arg(args, const char*);
-            int x = INT_ARG() - g_rs.camX;
-            int y = INT_ARG() - g_rs.camY;
-            int col = INT_ARG() % 16;
-
-            ensureFontTPage();
-            auto clut = textClut(col);
-
-            for (const char* p = str; *p; p++) {
-                char c = *p & 0x7F;
-                if (g_rs.spriteIdx >= MAX_SPRITES) break;
-
-                auto& f = g_rs.sprites[g_rs.spriteIdx++];
-                f.primitive.position.x = x * SCALE + OFS_X;
-                f.primitive.position.y = y * SCALE + g_rs.ofsY;
-                f.primitive.texInfo.u = (c % 16) * 16;
-                f.primitive.texInfo.v = (c / 16) * 16;
-                f.primitive.texInfo.clut = clut;
-                g_rs.ot->insert(f, g_rs.zCounter);
-
-                x += 4;
-            }
-            g_rs.zCounter--;
-        } break;
-
-        case CELESTE_P8_RECTFILL: {
-            int x0 = INT_ARG() - g_rs.camX;
-            int y0 = INT_ARG() - g_rs.camY;
-            int x1 = INT_ARG() - g_rs.camX;
-            int y1 = INT_ARG() - g_rs.camY;
-            int col = INT_ARG();
-
-            int px0 = x0 * SCALE + OFS_X;
-            int py0 = y0 * SCALE + g_rs.ofsY;
-            int px1 = (x1 + 1) * SCALE + OFS_X;
-            int py1 = (y1 + 1) * SCALE + g_rs.ofsY;
-            addRect(px0, py0, px1 - px0, py1 - py0, getDrawColor(col));
-            g_rs.zCounter--;
-        } break;
-
-        case CELESTE_P8_LINE: {
-            int x0 = INT_ARG() - g_rs.camX;
-            int y0 = INT_ARG() - g_rs.camY;
-            int x1 = INT_ARG() - g_rs.camX;
-            int y1 = INT_ARG() - g_rs.camY;
-            int col = INT_ARG();
-
-            if (g_rs.lineIdx < MAX_LINES) {
-                auto& f = g_rs.lines[g_rs.lineIdx++];
-                f.primitive.setColor(getDrawColor(col));
-                f.primitive.pointA.x = x0 * SCALE + OFS_X;
-                f.primitive.pointA.y = y0 * SCALE + g_rs.ofsY;
-                f.primitive.pointB.x = x1 * SCALE + OFS_X;
-                f.primitive.pointB.y = y1 * SCALE + g_rs.ofsY;
-                g_rs.ot->insert(f, g_rs.zCounter--);
-            }
-        } break;
-
-        case CELESTE_P8_MGET: {
-            int tx = INT_ARG();
-            int ty = INT_ARG();
-            ret = tilemap_data[tx + ty * 128];
-        } break;
-
-        case CELESTE_P8_CAMERA: {
-            g_rs.camX = INT_ARG();
-            g_rs.camY = INT_ARG();
-        } break;
-
-        case CELESTE_P8_FGET: {
-            int tile = INT_ARG();
-            int flag = INT_ARG();
-            ret = (tile < (int)(sizeof(tile_flags) / sizeof(*tile_flags))) &&
-                  (tile_flags[tile] & (1 << flag));
-        } break;
-
-        case CELESTE_P8_MAP: {
-            int mx = INT_ARG(), my = INT_ARG();
-            int tx = INT_ARG(), ty = INT_ARG();
-            int mw = INT_ARG(), mh = INT_ARG();
-            int mask = INT_ARG();
-
-            ensureGfxTPage();
-            auto clut = spriteClut();
-
-            for (int yi = 0; yi < mh; yi++) {
-                for (int xi = 0; xi < mw; xi++) {
-                    int tile = tilemap_data[xi + mx + (yi + my) * 128];
-                    if (tile == 0 && mask != 0) continue;
-                    bool match = (mask == 0) ||
-                                 (mask == 4 && tile_flags[tile] == 4) ||
-                                 ((tile < (int)(sizeof(tile_flags) / sizeof(*tile_flags))) &&
-                                  (tile_flags[tile] & (1 << (mask != 4 ? mask - 1 : mask))));
-                    if (!match) continue;
-                    if (g_rs.spriteIdx >= MAX_SPRITES) goto map_done;
-
-                    {
-                        auto& f = g_rs.sprites[g_rs.spriteIdx++];
-                        f.primitive.position.x =
-                            (tx + xi * 8 - g_rs.camX) * SCALE + OFS_X;
-                        f.primitive.position.y =
-                            (ty + yi * 8 - g_rs.camY) * SCALE + g_rs.ofsY;
-                        f.primitive.texInfo.u = (tile % 16) * 16;
-                        f.primitive.texInfo.v = (tile / 16) * 16;
-                        f.primitive.texInfo.clut = clut;
-                        g_rs.ot->insert(f, g_rs.zCounter);
-                    }
-                }
-            }
-        map_done:
-            g_rs.zCounter--;
-        } break;
+void P8spr(int sprite, int x, int y, int, int, bool, bool) {
+    if (sprite >= 0 && g_rs.spriteIdx < MAX_SPRITES) {
+        ensureGfxTPage();
+        auto& f = g_rs.sprites[g_rs.spriteIdx++];
+        int screenY = y - g_rs.camY;
+        f.primitive.position.x = (x - g_rs.camX) * SCALE + OFS_X;
+        f.primitive.position.y = screenY * SCALE + g_rs.ofsY;
+        f.primitive.texInfo.u = (sprite % 16) * 16;
+        f.primitive.texInfo.v = (sprite / 16) * 16;
+        f.primitive.texInfo.clut = spriteClut();
+        g_rs.ot->insert(f, g_rs.zCounter--);
+        g_rs.sprYSum += screenY;
+        g_rs.sprYCount++;
     }
-
-#undef INT_ARG
-#undef BOOL_ARG
-
-    va_end(args);
-    return ret;
 }
 
+bool P8btn(int b) {
+    return (g_rs.btnState & (1 << b)) != 0;
+}
+
+void P8pal(int a, int b) {
+    if (a >= 0 && a < 16 && b >= 0 && b < 16) {
+        g_rs.pal[a] = b;
+    }
+}
+
+void P8pal_reset() {
+    for (int i = 0; i < 16; i++) g_rs.pal[i] = i;
+}
+
+void P8circfill(int cx, int cy, int r, int col) {
+    cx -= g_rs.camX;
+    cy -= g_rs.camY;
+    auto color = getDrawColor(col);
+    int px = cx * SCALE + OFS_X;
+    int py = cy * SCALE + g_rs.ofsY;
+
+    if (r <= 1) {
+        addRect(px - SCALE, py, SCALE * 3, SCALE, color);
+        addRect(px, py - SCALE, SCALE, SCALE * 3, color);
+    } else if (r <= 2) {
+        addRect(px - SCALE * 2, py - SCALE, SCALE * 5, SCALE * 3, color);
+        addRect(px - SCALE, py - SCALE * 2, SCALE * 3, SCALE * 5, color);
+    } else if (r <= 3) {
+        addRect(px - SCALE * 3, py - SCALE, SCALE * 7, SCALE * 3, color);
+        addRect(px - SCALE, py - SCALE * 3, SCALE * 3, SCALE * 7, color);
+        addRect(px - SCALE * 2, py - SCALE * 2, SCALE * 5, SCALE * 5, color);
+    } else {
+        int f = 1 - r, ddFx = 1, ddFy = -2 * r;
+        int ix = 0, iy = r;
+        int rs = r * SCALE;
+        addRect(px - rs, py, rs * 2 + SCALE, SCALE, color);
+        addRect(px, py - rs, SCALE, rs * 2 + SCALE, color);
+        while (ix < iy) {
+            if (f >= 0) { iy--; ddFy += 2; f += ddFy; }
+            ix++; ddFx += 2; f += ddFx;
+            int sx = ix * SCALE, sy = iy * SCALE;
+            addRect(px - sx, py + sy, sx * 2 + SCALE, SCALE, color);
+            addRect(px - sx, py - sy, sx * 2 + SCALE, SCALE, color);
+            addRect(px - sy, py + sx, sy * 2 + SCALE, SCALE, color);
+            addRect(px - sy, py - sx, sy * 2 + SCALE, SCALE, color);
+        }
+    }
+    g_rs.zCounter--;
+}
+
+void P8print(const char* str, int x, int y, int col) {
+    x -= g_rs.camX;
+    y -= g_rs.camY;
+    col %= 16;
+    ensureFontTPage();
+    auto clut = textClut(col);
+
+    for (const char* p = str; *p; p++) {
+        char c = *p & 0x7F;
+        if (g_rs.spriteIdx >= MAX_SPRITES) break;
+
+        auto& f = g_rs.sprites[g_rs.spriteIdx++];
+        f.primitive.position.x = x * SCALE + OFS_X;
+        f.primitive.position.y = y * SCALE + g_rs.ofsY;
+        f.primitive.texInfo.u = (c % 16) * 16;
+        f.primitive.texInfo.v = (c / 16) * 16;
+        f.primitive.texInfo.clut = clut;
+        g_rs.ot->insert(f, g_rs.zCounter);
+
+        x += 4;
+    }
+    g_rs.zCounter--;
+}
+
+void P8rectfill(int x0, int y0, int x1, int y1, int col) {
+    x0 -= g_rs.camX; y0 -= g_rs.camY;
+    x1 -= g_rs.camX; y1 -= g_rs.camY;
+    int px0 = x0 * SCALE + OFS_X;
+    int py0 = y0 * SCALE + g_rs.ofsY;
+    int px1 = (x1 + 1) * SCALE + OFS_X;
+    int py1 = (y1 + 1) * SCALE + g_rs.ofsY;
+    addRect(px0, py0, px1 - px0, py1 - py0, getDrawColor(col));
+    g_rs.zCounter--;
+}
+
+void P8line(int x0, int y0, int x1, int y1, int col) {
+    x0 -= g_rs.camX; y0 -= g_rs.camY;
+    x1 -= g_rs.camX; y1 -= g_rs.camY;
+    if (g_rs.lineIdx < MAX_LINES) {
+        auto& f = g_rs.lines[g_rs.lineIdx++];
+        f.primitive.setColor(getDrawColor(col));
+        f.primitive.pointA.x = x0 * SCALE + OFS_X;
+        f.primitive.pointA.y = y0 * SCALE + g_rs.ofsY;
+        f.primitive.pointB.x = x1 * SCALE + OFS_X;
+        f.primitive.pointB.y = y1 * SCALE + g_rs.ofsY;
+        g_rs.ot->insert(f, g_rs.zCounter--);
+    }
+}
+
+int P8mget(int tx, int ty) {
+    return tilemap_data[tx + ty * 128];
+}
+
+bool P8fget(int tile, int flag) {
+    return (tile < (int)(sizeof(tile_flags) / sizeof(*tile_flags))) &&
+           (tile_flags[tile] & (1 << flag));
+}
+
+void P8camera(int x, int y) {
+    g_rs.camX = x;
+    g_rs.camY = y;
+}
+
+void P8map(int mx, int my, int tx, int ty, int mw, int mh, int mask) {
+    ensureGfxTPage();
+    auto clut = spriteClut();
+
+    for (int yi = 0; yi < mh; yi++) {
+        for (int xi = 0; xi < mw; xi++) {
+            int tile = tilemap_data[xi + mx + (yi + my) * 128];
+            if (tile == 0 && mask != 0) continue;
+            bool match = (mask == 0) ||
+                         (mask == 4 && tile_flags[tile] == 4) ||
+                         ((tile < (int)(sizeof(tile_flags) / sizeof(*tile_flags))) &&
+                          (tile_flags[tile] & (1 << (mask != 4 ? mask - 1 : mask))));
+            if (!match) continue;
+            if (g_rs.spriteIdx >= MAX_SPRITES) goto map_done;
+
+            {
+                auto& f = g_rs.sprites[g_rs.spriteIdx++];
+                f.primitive.position.x =
+                    (tx + xi * 8 - g_rs.camX) * SCALE + OFS_X;
+                f.primitive.position.y =
+                    (ty + yi * 8 - g_rs.camY) * SCALE + g_rs.ofsY;
+                f.primitive.texInfo.u = (tile % 16) * 16;
+                f.primitive.texInfo.v = (tile / 16) * 16;
+                f.primitive.texInfo.clut = clut;
+                g_rs.ot->insert(f, g_rs.zCounter);
+            }
+        }
+    }
+map_done:
+    g_rs.zCounter--;
+}
+
+}  // extern "C"
+
 // --- Application ---
+
+namespace {
 
 class CelesteApp : public psyqo::Application {
     void prepare() override;
@@ -432,8 +372,10 @@ void CelesteScene::start(StartReason reason) {
             makeRect(static_cast<int16_t>(TEXT_CLUT_X0 + i * 16), TEXT_CLUT_Y, 16, 1));
     }
 
+    // Initialize audio
+    audio_init();
+
     // Initialize game
-    Celeste_P8_set_call_func(pico8emu);
     Celeste_P8_set_rndseed(42);
     Celeste_P8_init();
 }
@@ -441,7 +383,7 @@ void CelesteScene::start(StartReason reason) {
 void CelesteScene::frame() {
     int buf = app.gpu().getParity();
 
-    // Set up render state for callback
+    // Set up render state
     g_rs.gpu = &app.gpu();
     g_rs.ot = &m_ot[buf];
     g_rs.sprites = m_sprites[buf];
@@ -494,6 +436,9 @@ void CelesteScene::frame() {
     // Game update + draw at 60fps (physics constants scaled for 60fps)
     Celeste_P8_update();
     Celeste_P8_draw();
+
+    // Advance audio playback
+    audio_update();
 
     // Update vertical camera tracking from this frame's sprite positions
     if (g_rs.sprYCount > 0) {

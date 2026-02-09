@@ -1,7 +1,7 @@
 TARGET = celeste
 TYPE = ps-exe
 
-SRCS = main.cpp celeste.cpp compat.cpp
+SRCS = main.cpp celeste.cpp compat.cpp psx_audio.cpp
 
 CPPFLAGS += -isystem libc
 LDFLAGS += -lgcc
