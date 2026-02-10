@@ -395,9 +395,9 @@ class RoomExtractor:
                   f"{len(tex.ps1_pixels)} px bytes")
 
     def _make_fallback(self, tex):
-        tex.width = 2; tex.height = 2
+        tex.width = 4; tex.height = 4
         tex.ps1_4bit = True; tex.num_clut_colors = 1
-        tex.ps1_pixels = bytes([0x00, 0x00])
+        tex.ps1_pixels = bytes(8)  # 4x4 4-bit = 8 bytes, all index 0
         grey = (1 << 15) | (16 << 10) | (16 << 5) | 16
         tex.ps1_clut = struct.pack("<H", grey)
 
@@ -604,14 +604,14 @@ def export_prm(chunks, textures, path):
     tex_start = (data_start + data_offset + 3) & ~3
     tex_desc_size = num_tex * 12
 
-    # Compute per-texture data offsets (pixel + clut blocks, contiguous)
+    # Compute per-texture data offsets (pixel + clut blocks, 4-byte aligned)
     tex_data_off = 0; tex_offsets = []
     for tex in textures:
         tex_offsets.append(tex_data_off)
         pix_sz = len(tex.ps1_pixels) if tex.ps1_pixels else 0
         clut_sz = len(tex.ps1_clut) if tex.ps1_clut else 0
         tex_data_off += pix_sz + clut_sz
-    tex_data_off = (tex_data_off + 3) & ~3
+        tex_data_off = (tex_data_off + 3) & ~3  # align each block to 4 bytes
 
     total_size = tex_start + tex_desc_size + tex_data_off
     buf = bytearray(total_size)

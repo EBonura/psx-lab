@@ -1,13 +1,12 @@
 // Zelda: Ocarina of Time — PS1 Port
-// Native PRM v2 room renderer with gouraud-shaded triangles.
-// Texture infrastructure present but disabled pending VRAM upload debugging.
+// Native PRM v2 room renderer with gouraud-textured triangles.
 //
 // Render pipeline per chunk:
 //   1. Batch-transform ALL vertices via GTE RTPT (3 at a time)
 //   2. For each triangle:
 //      a. Software NCLIP (cross product on pre-transformed screen coords)
 //      b. Average Z → ordering table index
-//      c. Per-vertex colors from PRM
+//      c. Per-vertex UVs + texture lookup
 //      d. Insert into ordering table
 
 #include "psyqo/application.hh"
@@ -26,6 +25,7 @@
 #include "psyqo/trigonometry.hh"
 
 #include "prm.h"
+#include "vram_alloc.h"
 #include "mesh_data.h"
 
 using namespace psyqo::trig_literals;
@@ -38,10 +38,12 @@ namespace {
 constexpr int OT_SIZE      = 1024;
 constexpr int MAX_TRIS     = 600;
 constexpr int MAX_VTX      = 256;
-constexpr int MAX_TEXTURES = 32;
 constexpr int SCREEN_W     = 320;
 constexpr int SCREEN_H     = 240;
 constexpr int H_PROJ       = 180;
+
+// ── VRAM allocator ───────────────────────────────────────────────────────
+static VramAlloc::Allocator s_vramAlloc;
 
 // ── Scratch buffers ──────────────────────────────────────────────────────
 
@@ -52,18 +54,6 @@ struct ScreenVtx {
 };
 
 static ScreenVtx s_scratch[MAX_VTX];
-
-// ── Per-texture runtime info (computed at VRAM upload time) ──────────────
-// TODO: re-enable when texture rendering is fixed
-
-struct TexInfo {
-    psyqo::PrimPieces::TPageAttr tpage;
-    psyqo::PrimPieces::ClutIndex clut;
-    uint8_t u_off, v_off;
-};
-
-static TexInfo s_texInfo[MAX_TEXTURES];
-static int s_numTextures = 0;
 
 // ── Application ──────────────────────────────────────────────────────────
 
@@ -81,16 +71,17 @@ class RoomScene final : public psyqo::Scene {
     void start(StartReason reason) override;
     void frame() override;
 
-    // Camera
+    // Camera (freefly)
     psyqo::Angle m_camRotY = 0.0_pi;
     psyqo::Angle m_camRotX = 0.1_pi;
-    int32_t m_camDist = 2500;
-    int32_t m_camY = -200;
+    int32_t m_camX = 0;
+    int32_t m_camY = 200;
+    int32_t m_camZ = -2500;
 
     // Double-buffered rendering resources
     psyqo::OrderingTable<OT_SIZE> m_ots[2];
     psyqo::Fragments::SimpleFragment<psyqo::Prim::FastFill> m_clear[2];
-    eastl::array<psyqo::Fragments::SimpleFragment<psyqo::Prim::GouraudTriangle>, MAX_TRIS> m_tris[2];
+    eastl::array<psyqo::Fragments::SimpleFragment<psyqo::Prim::GouraudTexturedTriangle>, MAX_TRIS> m_tris[2];
 
     int m_triCount;
     int m_parity;
@@ -98,6 +89,7 @@ class RoomScene final : public psyqo::Scene {
     // Mesh pointer
     const uint8_t* m_prm = ROOM_DATA;
 
+    void uploadTextures();
     void renderChunk(const PRM::ChunkDesc& chunk);
     void transformVertices(const PRM::Pos* pos, int count);
 };
@@ -132,7 +124,38 @@ void RoomScene::start(StartReason) {
     psyqo::GTE::write<psyqo::GTE::Register::ZSF3, psyqo::GTE::Unsafe>(OT_SIZE / 3);
     psyqo::GTE::write<psyqo::GTE::Register::ZSF4, psyqo::GTE::Unsafe>(OT_SIZE / 4);
 
-    // TODO: uploadTextures() — disabled pending VRAM upload debugging
+    uploadTextures();
+}
+
+// ── Upload PRM textures to VRAM via allocator ────────────────────────────
+
+void RoomScene::uploadTextures() {
+    const auto* hdr = PRM::header(m_prm);
+    const auto* descs = PRM::texDescs(m_prm);
+    const uint8_t* tdata = PRM::texData(m_prm);
+
+    s_vramAlloc.reset();
+
+    for (int i = 0; i < hdr->num_textures; i++) {
+        const auto& td = descs[i];
+        uint16_t clut_n = PRM::texClutCount(td);
+
+        int slot = s_vramAlloc.alloc(td.width, td.height, td.format, clut_n);
+        if (slot < 0) continue;  // VRAM full — skip
+
+        // Upload pixel data
+        const uint16_t* pix = reinterpret_cast<const uint16_t*>(
+            tdata + td.data_offset);
+        gpu().uploadToVRAM(pix, s_vramAlloc.pixelRect(slot));
+
+        // Upload CLUT (immediately after pixel data)
+        uint32_t pix_bytes = PRM::texPixelSize(td);
+        // Align to 2 bytes (CLUT is uint16_t array)
+        pix_bytes = (pix_bytes + 1) & ~1u;
+        const uint16_t* clut = reinterpret_cast<const uint16_t*>(
+            tdata + td.data_offset + pix_bytes);
+        gpu().uploadToVRAM(clut, s_vramAlloc.clutRect(slot));
+    }
 }
 
 // ── Frame rendering ──────────────────────────────────────────────────────
@@ -140,7 +163,10 @@ void RoomScene::start(StartReason) {
 void RoomScene::frame() {
     // ── Input ────────────────────────────────────────────────────────────
     using Pad = psyqo::SimplePad;
+    constexpr int32_t MOVE_SPEED = 40;
+    constexpr int32_t VERT_SPEED = 30;
 
+    // Rotation
     if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Left))  m_camRotY -= 0.02_pi;
     if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Right)) m_camRotY += 0.02_pi;
     if (m_camRotY < 0.0_pi)  m_camRotY += 2.0_pi;
@@ -149,14 +175,6 @@ void RoomScene::frame() {
     if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Up))   m_camRotX -= 0.01_pi;
     if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Down)) m_camRotX += 0.01_pi;
 
-    if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::L1)) m_camDist -= 50;
-    if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::R1)) m_camDist += 50;
-    if (m_camDist < 200)  m_camDist = 200;
-    if (m_camDist > 8000) m_camDist = 8000;
-
-    if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::L2)) m_camY -= 30;
-    if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::R2)) m_camY += 30;
-
     // ── View matrix ──────────────────────────────────────────────────────
     auto rotY = psyqo::SoftMath::generateRotationMatrix33(
         m_camRotY, psyqo::SoftMath::Axis::Y, app.m_trig);
@@ -164,13 +182,43 @@ void RoomScene::frame() {
         m_camRotX, psyqo::SoftMath::Axis::X, app.m_trig);
     psyqo::Matrix33 viewRot;
     psyqo::SoftMath::multiplyMatrix33(rotX, rotY, &viewRot);
+
+    // Forward/backward along camera look direction (column 2 of R^T = row 2 components)
+    if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::L1)) {
+        m_camX += (viewRot.vs[0].z.raw() * MOVE_SPEED) >> 12;
+        m_camY += (viewRot.vs[1].z.raw() * MOVE_SPEED) >> 12;
+        m_camZ += (viewRot.vs[2].z.raw() * MOVE_SPEED) >> 12;
+    }
+    if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::R1)) {
+        m_camX -= (viewRot.vs[0].z.raw() * MOVE_SPEED) >> 12;
+        m_camY -= (viewRot.vs[1].z.raw() * MOVE_SPEED) >> 12;
+        m_camZ -= (viewRot.vs[2].z.raw() * MOVE_SPEED) >> 12;
+    }
+
+    // Vertical movement
+    if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::L2)) m_camY += VERT_SPEED;
+    if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::R2)) m_camY -= VERT_SPEED;
+
+    // Write rotation to GTE
     psyqo::GTE::writeUnsafe<psyqo::GTE::PseudoRegister::Rotation>(viewRot);
 
-    psyqo::GTE::clear<psyqo::GTE::Register::TRX, psyqo::GTE::Unsafe>();
+    // Translation = -R * camPos
+    int32_t tx = -((viewRot.vs[0].x.raw() * m_camX +
+                    viewRot.vs[0].y.raw() * m_camY +
+                    viewRot.vs[0].z.raw() * m_camZ) >> 12);
+    int32_t ty = -((viewRot.vs[1].x.raw() * m_camX +
+                    viewRot.vs[1].y.raw() * m_camY +
+                    viewRot.vs[1].z.raw() * m_camZ) >> 12);
+    int32_t tz = -((viewRot.vs[2].x.raw() * m_camX +
+                    viewRot.vs[2].y.raw() * m_camY +
+                    viewRot.vs[2].z.raw() * m_camZ) >> 12);
+
+    psyqo::GTE::write<psyqo::GTE::Register::TRX, psyqo::GTE::Unsafe>(
+        static_cast<uint32_t>(tx));
     psyqo::GTE::write<psyqo::GTE::Register::TRY, psyqo::GTE::Unsafe>(
-        static_cast<uint32_t>(static_cast<int32_t>(m_camY)));
+        static_cast<uint32_t>(ty));
     psyqo::GTE::write<psyqo::GTE::Register::TRZ, psyqo::GTE::Unsafe>(
-        static_cast<uint32_t>(m_camDist));
+        static_cast<uint32_t>(tz));
 
     // Reset per-frame state
     m_parity = gpu().getParity();
@@ -248,12 +296,13 @@ void RoomScene::renderChunk(const PRM::ChunkDesc& chunk) {
 
     const auto* pos = PRM::positions(m_prm, chunk);
     const auto* col = PRM::colors(m_prm, chunk);
+    const auto* uv = PRM::uvs(m_prm, chunk);
     const auto* tri = PRM::triangles(m_prm, chunk);
 
     // Step 1: Batch-transform all vertices
     transformVertices(pos, chunk.num_verts);
 
-    // Step 2: Emit gouraud-shaded triangles using pre-transformed screen coords
+    // Step 2: Emit gouraud-textured triangles
     for (int t = 0; t < chunk.num_tris && m_triCount < MAX_TRIS; t++) {
         const auto& idx = tri[t];
         const auto& sv0 = s_scratch[idx.v0];
@@ -281,20 +330,31 @@ void RoomScene::renderChunk(const PRM::ChunkDesc& chunk) {
         int32_t otIdx = static_cast<int32_t>((sumZ * (OT_SIZE / 3)) >> 12);
         if (otIdx <= 0 || otIdx >= OT_SIZE) continue;
 
-        // Set up gouraud-shaded triangle with vertex colors
         auto& frag = m_tris[m_parity][m_triCount];
         auto& p = frag.primitive;
 
+        // Positions
         p.pointA.x = sv0.sx; p.pointA.y = sv0.sy;
         p.pointB.x = sv1.sx; p.pointB.y = sv1.sy;
         p.pointC.x = sv2.sx; p.pointC.y = sv2.sy;
 
-        const auto& c0 = col[idx.v0];
-        const auto& c1 = col[idx.v1];
-        const auto& c2 = col[idx.v2];
-        p.setColorA(psyqo::Color{{.r = c0.r, .g = c0.g, .b = c0.b}});
-        p.setColorB(psyqo::Color{{.r = c1.r, .g = c1.g, .b = c1.b}});
-        p.setColorC(psyqo::Color{{.r = c2.r, .g = c2.g, .b = c2.b}});
+        // Neutral modulation (128 = 1.0x on PS1) so texture shows at full brightness
+        psyqo::Color neutral{{.r = 128, .g = 128, .b = 128}};
+        p.setColorA(neutral);
+        p.setColorB(neutral);
+        p.setColorC(neutral);
+
+        // Per-triangle texture lookup
+        const auto& ti = s_vramAlloc.info(idx.tex_id);
+        p.uvA.u = uv[idx.v0].u + ti.u_off;
+        p.uvA.v = uv[idx.v0].v + ti.v_off;
+        p.uvB.u = uv[idx.v1].u + ti.u_off;
+        p.uvB.v = uv[idx.v1].v + ti.v_off;
+        p.uvC.u = uv[idx.v2].u + ti.u_off;
+        p.uvC.v = uv[idx.v2].v + ti.v_off;
+
+        p.tpage = ti.tpage;
+        p.clutIndex = ti.clut;
 
         m_ots[m_parity].insert(frag, otIdx);
         m_triCount++;
