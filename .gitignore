@@ -4,3 +4,10 @@
 *.map
 *.ps-exe
 release/
+
+# OoT — generated asset files (extracted from user-provided ROM, never commit)
+src/oot/mesh_data.h
+*.prm
+*.z64
+*.n64
+*.v64
