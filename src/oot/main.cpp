@@ -1,17 +1,14 @@
 // Zelda: Ocarina of Time — PS1 Port
-// Native PRM room renderer with batch GTE vertex transform.
+// Native PRM v2 room renderer with gouraud-shaded triangles.
+// Texture infrastructure present but disabled pending VRAM upload debugging.
 //
 // Render pipeline per chunk:
-//   1. Frustum cull bounding sphere (TODO)
-//   2. Batch-transform ALL vertices via GTE RTPT (3 at a time)
-//      → store screen XY + Z in scratch arrays
-//   3. For each triangle:
+//   1. Batch-transform ALL vertices via GTE RTPT (3 at a time)
+//   2. For each triangle:
 //      a. Software NCLIP (cross product on pre-transformed screen coords)
 //      b. Average Z → ordering table index
-//      c. Per-vertex colors → gouraud triangle primitive
+//      c. Per-vertex colors from PRM
 //      d. Insert into ordering table
-//
-// This avoids re-transforming shared vertices (each vert shared ~4-6 tris).
 
 #include "psyqo/application.hh"
 #include "psyqo/fixed-point.hh"
@@ -38,14 +35,15 @@ namespace {
 
 // ── Tuning constants ─────────────────────────────────────────────────────
 
-constexpr int OT_SIZE    = 1024;   // Depth buckets (more = better Z precision)
-constexpr int MAX_TRIS   = 600;    // Max visible tris per frame after culling
-constexpr int MAX_VTX    = 256;    // Max verts per chunk (matches PRM limit)
-constexpr int SCREEN_W   = 320;
-constexpr int SCREEN_H   = 240;
-constexpr int H_PROJ     = 180;    // Projection plane distance
+constexpr int OT_SIZE      = 1024;
+constexpr int MAX_TRIS     = 600;
+constexpr int MAX_VTX      = 256;
+constexpr int MAX_TEXTURES = 32;
+constexpr int SCREEN_W     = 320;
+constexpr int SCREEN_H     = 240;
+constexpr int H_PROJ       = 180;
 
-// ── Scratch buffers for batch vertex transform ───────────────────────────
+// ── Scratch buffers ──────────────────────────────────────────────────────
 
 struct ScreenVtx {
     int16_t sx, sy;
@@ -54,6 +52,18 @@ struct ScreenVtx {
 };
 
 static ScreenVtx s_scratch[MAX_VTX];
+
+// ── Per-texture runtime info (computed at VRAM upload time) ──────────────
+// TODO: re-enable when texture rendering is fixed
+
+struct TexInfo {
+    psyqo::PrimPieces::TPageAttr tpage;
+    psyqo::PrimPieces::ClutIndex clut;
+    uint8_t u_off, v_off;
+};
+
+static TexInfo s_texInfo[MAX_TEXTURES];
+static int s_numTextures = 0;
 
 // ── Application ──────────────────────────────────────────────────────────
 
@@ -121,6 +131,8 @@ void RoomScene::start(StartReason) {
     psyqo::GTE::write<psyqo::GTE::Register::H, psyqo::GTE::Unsafe>(H_PROJ);
     psyqo::GTE::write<psyqo::GTE::Register::ZSF3, psyqo::GTE::Unsafe>(OT_SIZE / 3);
     psyqo::GTE::write<psyqo::GTE::Register::ZSF4, psyqo::GTE::Unsafe>(OT_SIZE / 4);
+
+    // TODO: uploadTextures() — disabled pending VRAM upload debugging
 }
 
 // ── Frame rendering ──────────────────────────────────────────────────────
@@ -129,23 +141,19 @@ void RoomScene::frame() {
     // ── Input ────────────────────────────────────────────────────────────
     using Pad = psyqo::SimplePad;
 
-    // D-pad Left/Right: rotate Y
     if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Left))  m_camRotY -= 0.02_pi;
     if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Right)) m_camRotY += 0.02_pi;
     if (m_camRotY < 0.0_pi)  m_camRotY += 2.0_pi;
     if (m_camRotY >= 2.0_pi) m_camRotY -= 2.0_pi;
 
-    // D-pad Up/Down: tilt X
     if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Up))   m_camRotX -= 0.01_pi;
     if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Down)) m_camRotX += 0.01_pi;
 
-    // L1/R1: zoom
     if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::L1)) m_camDist -= 50;
     if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::R1)) m_camDist += 50;
     if (m_camDist < 200)  m_camDist = 200;
     if (m_camDist > 8000) m_camDist = 8000;
 
-    // L2/R2: camera height
     if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::L2)) m_camY -= 30;
     if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::R2)) m_camY += 30;
 
@@ -158,7 +166,6 @@ void RoomScene::frame() {
     psyqo::SoftMath::multiplyMatrix33(rotX, rotY, &viewRot);
     psyqo::GTE::writeUnsafe<psyqo::GTE::PseudoRegister::Rotation>(viewRot);
 
-    // Translation: offset camera from room center
     psyqo::GTE::clear<psyqo::GTE::Register::TRX, psyqo::GTE::Unsafe>();
     psyqo::GTE::write<psyqo::GTE::Register::TRY, psyqo::GTE::Unsafe>(
         static_cast<uint32_t>(static_cast<int32_t>(m_camY)));
@@ -189,13 +196,8 @@ void RoomScene::frame() {
 // ── Batch vertex transform ───────────────────────────────────────────────
 
 void RoomScene::transformVertices(const PRM::Pos* pos, int count) {
-    // PRM::Pos is {int16_t x,y,z,pad} = 8 bytes.
-    // In LE memory: word[0] = (y<<16)|x = GTE VXY format, word[1] = (pad<<16)|z = GTE VZ format.
-    // Write directly to GTE registers — zero conversion overhead.
-
     int i = 0;
 
-    // Batch of 3: RTPT (≈23 cycles for 3 vertices)
     for (; i + 2 < count; i += 3) {
         const auto* r0 = reinterpret_cast<const uint32_t*>(&pos[i]);
         const auto* r1 = reinterpret_cast<const uint32_t*>(&pos[i + 1]);
@@ -225,7 +227,6 @@ void RoomScene::transformVertices(const PRM::Pos* pos, int count) {
         s_scratch[i + 2].sz = static_cast<uint16_t>(sz3);
     }
 
-    // Remainder: RTPS (single vertex, ≈14 cycles)
     for (; i < count; i++) {
         const auto* r = reinterpret_cast<const uint32_t*>(&pos[i]);
         psyqo::GTE::write<psyqo::GTE::Register::VXY0, psyqo::GTE::Unsafe>(r[0]);
@@ -252,7 +253,7 @@ void RoomScene::renderChunk(const PRM::ChunkDesc& chunk) {
     // Step 1: Batch-transform all vertices
     transformVertices(pos, chunk.num_verts);
 
-    // Step 2: Emit triangles using pre-transformed screen coords
+    // Step 2: Emit gouraud-shaded triangles using pre-transformed screen coords
     for (int t = 0; t < chunk.num_tris && m_triCount < MAX_TRIS; t++) {
         const auto& idx = tri[t];
         const auto& sv0 = s_scratch[idx.v0];
@@ -268,26 +269,19 @@ void RoomScene::renderChunk(const PRM::ChunkDesc& chunk) {
         int32_t dx1 = sv2.sx - sv0.sx;
         int32_t dy1 = sv2.sy - sv0.sy;
         int32_t cross = dx0 * dy1 - dx1 * dy0;
-        if (cross >= 0) continue;  // Backface cull (interior faces visible)
+        if (cross >= 0) continue;  // Backface cull
 
-        // Screen bounds reject (prevents giant triangles from vertices behind camera)
+        // Screen bounds reject
         if (sv0.sx < -512 || sv0.sx > 512 || sv0.sy < -512 || sv0.sy > 512) continue;
         if (sv1.sx < -512 || sv1.sx > 512 || sv1.sy < -512 || sv1.sy > 512) continue;
         if (sv2.sx < -512 || sv2.sx > 512 || sv2.sy < -512 || sv2.sy > 512) continue;
 
-        // Average Z → OT index (matches GTE avsz3: OTZ = sumZ * ZSF3 >> 12)
+        // Average Z → OT index
         uint32_t sumZ = uint32_t(sv0.sz) + sv1.sz + sv2.sz;
         int32_t otIdx = static_cast<int32_t>((sumZ * (OT_SIZE / 3)) >> 12);
         if (otIdx <= 0 || otIdx >= OT_SIZE) continue;
 
-        // Vertex colors (boost zero-color verts — they use normals on N64, no lighting on PS1)
-        auto fixColor = [](const PRM::Color& c) -> psyqo::Color {
-            uint8_t r = c.r, g = c.g, b = c.b;
-            if (r == 0 && g == 0 && b == 0) { r = 80; g = 70; b = 60; }  // ambient fallback
-            return {{.r = r, .g = g, .b = b}};
-        };
-
-        // Set up gouraud-shaded triangle
+        // Set up gouraud-shaded triangle with vertex colors
         auto& frag = m_tris[m_parity][m_triCount];
         auto& p = frag.primitive;
 
@@ -295,10 +289,12 @@ void RoomScene::renderChunk(const PRM::ChunkDesc& chunk) {
         p.pointB.x = sv1.sx; p.pointB.y = sv1.sy;
         p.pointC.x = sv2.sx; p.pointC.y = sv2.sy;
 
-        p.setColorA(fixColor(col[idx.v0]));
-        p.setColorB(fixColor(col[idx.v1]));
-        p.setColorC(fixColor(col[idx.v2]));
-        p.setOpaque();
+        const auto& c0 = col[idx.v0];
+        const auto& c1 = col[idx.v1];
+        const auto& c2 = col[idx.v2];
+        p.setColorA(psyqo::Color{{.r = c0.r, .g = c0.g, .b = c0.b}});
+        p.setColorB(psyqo::Color{{.r = c1.r, .g = c1.g, .b = c1.b}});
+        p.setColorC(psyqo::Color{{.r = c2.r, .g = c2.g, .b = c2.b}});
 
         m_ots[m_parity].insert(frag, otIdx);
         m_triCount++;
