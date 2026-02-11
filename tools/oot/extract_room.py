@@ -446,7 +446,9 @@ class RoomExtractor:
         nbytes = (npix + 1) // 2
         if pix_off + nbytes > len(pix_buf): self._make_fallback(tex); return
 
-        tex.ps1_pixels = bytes(pix_buf[pix_off:pix_off + nbytes])
+        # Swap nibbles: N64 CI4 = high nibble first, PS1 4-bit = low nibble first
+        raw = pix_buf[pix_off:pix_off + nbytes]
+        tex.ps1_pixels = bytes(((b >> 4) | ((b & 0x0F) << 4)) for b in raw)
         tex.ps1_4bit = True
         tex.num_clut_colors = 16
 
