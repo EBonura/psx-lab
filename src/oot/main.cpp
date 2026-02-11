@@ -1,5 +1,8 @@
 // Zelda: Ocarina of Time — PS1 Port
-// Native PRM v2 room renderer with gouraud-textured triangles.
+// CD-ROM streaming room renderer with gouraud-textured triangles.
+//
+// Rooms are loaded from disc on demand via CDRomDevice + ISO9660Parser.
+// Only one room is resident in RAM at a time. Select button cycles rooms.
 //
 // Render pipeline per chunk:
 //   1. Batch-transform ALL vertices via GTE RTPT (3 at a time)
@@ -10,11 +13,15 @@
 //      d. Insert into ordering table
 
 #include "psyqo/application.hh"
+#include "psyqo/buffer.hh"
+#include "psyqo/cdrom-device.hh"
 #include "psyqo/fixed-point.hh"
+#include "psyqo/font.hh"
 #include "psyqo/fragments.hh"
 #include "psyqo/gpu.hh"
 #include "psyqo/gte-kernels.hh"
 #include "psyqo/gte-registers.hh"
+#include "psyqo/iso9660-parser.hh"
 #include "psyqo/ordering-table.hh"
 #include "psyqo/primitives/common.hh"
 #include "psyqo/primitives/misc.hh"
@@ -24,9 +31,10 @@
 #include "psyqo/soft-math.hh"
 #include "psyqo/trigonometry.hh"
 
+#include "psyqo-paths/cdrom-loader.hh"
+
 #include "prm.h"
 #include "vram_alloc.h"
-#include "mesh_data.h"
 
 using namespace psyqo::trig_literals;
 using namespace psyqo::fixed_point_literals;
@@ -41,6 +49,30 @@ constexpr int MAX_VTX      = 256;
 constexpr int SCREEN_W     = 320;
 constexpr int SCREEN_H     = 240;
 constexpr int H_PROJ       = 180;
+
+// ── Room table ──────────────────────────────────────────────────────────
+
+constexpr int NUM_ROOMS = 10;
+
+static const char* const ROOM_FILES[NUM_ROOMS] = {
+    "ROOMS/YDAN_0.PRM;1",
+    "ROOMS/YDAN_1.PRM;1",
+    "ROOMS/SPOT04_0.PRM;1",
+    "ROOMS/SPOT00_0.PRM;1",
+    "ROOMS/BMORI1_0.PRM;1",
+    "ROOMS/HIDAN_0.PRM;1",
+    "ROOMS/MIZUSIN0.PRM;1",
+    "ROOMS/HAKADAN0.PRM;1",
+    "ROOMS/SPOT15_0.PRM;1",
+    "ROOMS/SPOT01_0.PRM;1",
+};
+
+static const char* const ROOM_NAMES[NUM_ROOMS] = {
+    "Deku Tree 1", "Deku Tree 2", "Kokiri Forest",
+    "Hyrule Field", "Forest Temple", "Fire Temple",
+    "Water Temple", "Shadow Temple", "Lon Lon Ranch",
+    "Kakariko",
+};
 
 // ── VRAM allocator ───────────────────────────────────────────────────────
 static VramAlloc::Allocator s_vramAlloc;
@@ -63,6 +95,10 @@ class OotApp final : public psyqo::Application {
   public:
     psyqo::Trig<> m_trig;
     psyqo::SimplePad m_pad;
+    psyqo::Font<> m_font;
+    psyqo::CDRomDevice m_cdrom;
+    psyqo::ISO9660Parser m_isoParser{&m_cdrom};
+    psyqo::paths::CDRomLoader m_loader;
 };
 
 // ── Room renderer scene ──────────────────────────────────────────────────
@@ -86,9 +122,14 @@ class RoomScene final : public psyqo::Scene {
     int m_triCount;
     int m_parity;
 
-    // Mesh pointer
-    const uint8_t* m_prm = ROOM_DATA;
+    // Room streaming
+    int m_roomIdx = 0;
+    psyqo::Buffer<uint8_t> m_roomBuf;
+    const uint8_t* m_prm = nullptr;
+    bool m_loading = false;
+    bool m_selectHeld = false;
 
+    void loadRoom(int idx);
     void uploadTextures();
     void renderChunk(const PRM::ChunkDesc& chunk);
     void transformVertices(const PRM::Pos* pos, int count);
@@ -106,10 +147,12 @@ void OotApp::prepare() {
         .set(psyqo::GPU::ColorMode::C15BITS)
         .set(psyqo::GPU::Interlace::PROGRESSIVE);
     gpu().initialize(config);
+    m_cdrom.prepare();
 }
 
 void OotApp::createScene() {
     m_pad.initialize();
+    m_font.uploadSystemFont(gpu());
     pushScene(&roomScene);
 }
 
@@ -124,7 +167,31 @@ void RoomScene::start(StartReason) {
     psyqo::GTE::write<psyqo::GTE::Register::ZSF3, psyqo::GTE::Unsafe>(OT_SIZE / 3);
     psyqo::GTE::write<psyqo::GTE::Register::ZSF4, psyqo::GTE::Unsafe>(OT_SIZE / 4);
 
-    uploadTextures();
+    loadRoom(0);
+}
+
+// ── Room loading via CD-ROM ─────────────────────────────────────────────
+
+void RoomScene::loadRoom(int idx) {
+    m_loading = true;
+    m_prm = nullptr;
+    m_roomIdx = idx;
+
+    app.m_loader.readFile(ROOM_FILES[idx], app.m_isoParser,
+        [this](psyqo::Buffer<uint8_t>&& buffer) {
+            m_roomBuf = eastl::move(buffer);
+            m_prm = m_roomBuf.data();
+            if (m_prm) {
+                uploadTextures();
+            }
+            // Reset camera for new room
+            m_camRotY = 0.0_pi;
+            m_camRotX = 0.1_pi;
+            m_camX = 0;
+            m_camY = 200;
+            m_camZ = -2500;
+            m_loading = false;
+        });
 }
 
 // ── Upload PRM textures to VRAM via allocator ────────────────────────────
@@ -165,6 +232,14 @@ void RoomScene::frame() {
     using Pad = psyqo::SimplePad;
     constexpr int32_t MOVE_SPEED = 40;
     constexpr int32_t VERT_SPEED = 30;
+
+    // Room cycling: Select button (debounced)
+    bool selectNow = app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Select);
+    if (selectNow && !m_selectHeld && !m_loading) {
+        int next = (m_roomIdx + 1) % NUM_ROOMS;
+        loadRoom(next);
+    }
+    m_selectHeld = selectNow;
 
     // Rotation
     if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Left))  m_camRotY -= 0.02_pi;
@@ -226,11 +301,13 @@ void RoomScene::frame() {
     auto& ot = m_ots[m_parity];
     ot.clear();
 
-    // Render all chunks
-    const auto* hdr = PRM::header(m_prm);
-    const auto* cdescs = PRM::chunks(m_prm);
-    for (int ci = 0; ci < hdr->num_chunks; ci++) {
-        renderChunk(cdescs[ci]);
+    // Render all chunks (skip if still loading or no data)
+    if (!m_loading && m_prm) {
+        const auto* hdr = PRM::header(m_prm);
+        const auto* cdescs = PRM::chunks(m_prm);
+        for (int ci = 0; ci < hdr->num_chunks; ci++) {
+            renderChunk(cdescs[ci]);
+        }
     }
 
     // Submit: clear screen + ordered geometry
@@ -239,6 +316,19 @@ void RoomScene::frame() {
     gpu().getNextClear(clear.primitive, bg);
     gpu().chain(clear);
     gpu().chain(ot);
+
+    // Debug HUD
+    psyqo::Color white{{.r = 255, .g = 255, .b = 255}};
+    if (m_loading) {
+        app.m_font.printf(gpu(), {{.x = 8, .y = 8}}, white, "Loading %s...", ROOM_NAMES[m_roomIdx]);
+    } else if (m_prm) {
+        const auto* hdr = PRM::header(m_prm);
+        app.m_font.printf(gpu(), {{.x = 8, .y = 8}}, white,
+            "[%d/%d] %s  %dv %dt", m_roomIdx + 1, NUM_ROOMS,
+            ROOM_NAMES[m_roomIdx], hdr->num_verts, hdr->num_tris);
+    } else {
+        app.m_font.printf(gpu(), {{.x = 8, .y = 8}}, white, "No room data (buf=%d)", m_roomBuf.size());
+    }
 }
 
 // ── Batch vertex transform ───────────────────────────────────────────────
