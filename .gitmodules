@@ -1,3 +1,6 @@
 [submodule "third_party/nugget"]
 	path = third_party/nugget
 	url = https://github.com/pcsx-redux/nugget.git
+[submodule "third_party/oot"]
+	path = third_party/oot
+	url = https://github.com/zeldaret/oot.git

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- mkpsxiso disc layout for OoT PS1 port -->
+<iso_project image_name="oot.bin" cue_sheet="oot.cue">
+  <track type="data">
+    <identifiers
+      system        ="PLAYSTATION"
+      application   ="PLAYSTATION"
+      volume        ="OOT"
+      volume_set    ="OOT"
+      publisher     =""
+      data_preparer =""
+    />
+    <directory_tree>
+      <file name="SYSTEM.CNF" source="SYSTEM.CNF"/>
+      <file name="OOT.EXE"    source="../../src/oot/oot.ps-exe"/>
+      <file name="LINK.SKM"   source="../../data/oot/link.skm"/>
+      <dir name="ROOMS">
+        <file name="YDAN_0.PRM"   source="../../data/oot/rooms/ydan_room_0.prm"/>
+        <file name="YDAN_1.PRM"   source="../../data/oot/rooms/ydan_room_1.prm"/>
+        <file name="SPOT04_0.PRM" source="../../data/oot/rooms/spot04_room_0.prm"/>
+        <file name="SPOT00_0.PRM" source="../../data/oot/rooms/spot00_room_0.prm"/>
+        <file name="BMORI1_0.PRM" source="../../data/oot/rooms/Bmori1_room_0.prm"/>
+        <file name="HIDAN_0.PRM"  source="../../data/oot/rooms/HIDAN_room_0.prm"/>
+        <file name="MIZUSIN0.PRM" source="../../data/oot/rooms/MIZUsin_room_0.prm"/>
+        <file name="HAKADAN0.PRM" source="../../data/oot/rooms/HAKAdan_room_0.prm"/>
+        <file name="SPOT15_0.PRM" source="../../data/oot/rooms/spot15_room_0.prm"/>
+        <file name="SPOT01_0.PRM" source="../../data/oot/rooms/spot01_room_0.prm"/>
+      </dir>
+    </directory_tree>
+  </track>
+</iso_project>

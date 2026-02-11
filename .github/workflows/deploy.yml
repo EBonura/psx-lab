@@ -44,14 +44,30 @@ jobs:
           LIBGCC_PATH=$(mipsel-linux-gnu-gcc -print-libgcc-file-name)
           sudo cp /tmp/libgcc_baremetal.a "$LIBGCC_PATH"
 
+      - name: Install mkpsxiso
+        run: |
+          curl -sL -o /tmp/mkpsxiso.deb https://github.com/Lameguy64/mkpsxiso/releases/download/v2.20/mkpsxiso-2.20-Linux.deb
+          sudo dpkg -i /tmp/mkpsxiso.deb
+
       - name: Build celeste
         run: make -C src/celeste deploy BUILD=Release
+
+      - name: Build disc image
+        run: make -C src/celeste disc
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: celeste-ps-exe
           path: release/celeste.ps-exe
+
+      - name: Upload disc image
+        uses: actions/upload-artifact@v4
+        with:
+          name: celeste-disc
+          path: |
+            release/celeste.bin
+            release/celeste.cue
 
       - name: Deploy to itch.io
         env:
@@ -61,3 +77,5 @@ jobs:
           unzip butler.zip
           chmod +x butler
           ./butler push release/celeste.ps-exe bonnie-games/celeste-classic-psx:psx
+          cd release && zip celeste-psx-disc.zip celeste.bin celeste.cue && cd ..
+          ./butler push release/celeste-psx-disc.zip bonnie-games/celeste-classic-psx:disc
