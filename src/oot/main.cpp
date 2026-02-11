@@ -70,8 +70,10 @@ void RoomScene::frame() {
 
     // ── Input ────────────────────────────────────────────────────────────
     using Pad = psyqo::SimplePad;
-    constexpr int32_t MOVE_SPEED = 40;
-    constexpr int32_t VERT_SPEED = 30;
+    constexpr int32_t CAM_TARGET_Y = 40;   // look-at height above skeleton root
+    constexpr int32_t CAM_DIST_MIN = 100;
+    constexpr int32_t CAM_DIST_MAX = 3000;
+    constexpr int32_t CAM_ZOOM_SPEED = 20;
 
     // Room cycling: Select button (debounced)
     bool selectNow = app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Select);
@@ -107,7 +109,7 @@ void RoomScene::frame() {
         m_crossHeld = crossNow;
     }
 
-    // Rotation
+    // Orbit rotation (D-pad)
     if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Left))  m_camRotY -= 0.02_pi;
     if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Right)) m_camRotY += 0.02_pi;
     if (m_camRotY < 0.0_pi)  m_camRotY += 2.0_pi;
@@ -115,30 +117,32 @@ void RoomScene::frame() {
 
     if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Up))   m_camRotX -= 0.01_pi;
     if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Down)) m_camRotX += 0.01_pi;
+    if (m_camRotX < 0.02_pi) m_camRotX = psyqo::Angle(0.02_pi);
+    if (m_camRotX > 0.45_pi) m_camRotX = psyqo::Angle(0.45_pi);
+
+    // Orbit distance (L1/R1 zoom)
+    if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::L1))
+        m_camDist -= CAM_ZOOM_SPEED;
+    if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::R1))
+        m_camDist += CAM_ZOOM_SPEED;
+    if (m_camDist < CAM_DIST_MIN) m_camDist = CAM_DIST_MIN;
+    if (m_camDist > CAM_DIST_MAX) m_camDist = CAM_DIST_MAX;
 
     // ── View matrix ──────────────────────────────────────────────────────
     auto rotY = psyqo::SoftMath::generateRotationMatrix33(
         m_camRotY, psyqo::SoftMath::Axis::Y, app.m_trig);
     auto rotX = psyqo::SoftMath::generateRotationMatrix33(
-        m_camRotX, psyqo::SoftMath::Axis::X, app.m_trig);
+        -m_camRotX, psyqo::SoftMath::Axis::X, app.m_trig);
     psyqo::Matrix33 viewRot;
     psyqo::SoftMath::multiplyMatrix33(rotX, rotY, &viewRot);
 
-    // Forward/backward along camera look direction
-    if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::L1)) {
-        m_camX += (viewRot.vs[0].z.raw() * MOVE_SPEED) >> 12;
-        m_camY += (viewRot.vs[1].z.raw() * MOVE_SPEED) >> 12;
-        m_camZ += (viewRot.vs[2].z.raw() * MOVE_SPEED) >> 12;
-    }
-    if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::R1)) {
-        m_camX -= (viewRot.vs[0].z.raw() * MOVE_SPEED) >> 12;
-        m_camY -= (viewRot.vs[1].z.raw() * MOVE_SPEED) >> 12;
-        m_camZ -= (viewRot.vs[2].z.raw() * MOVE_SPEED) >> 12;
-    }
-
-    // Vertical movement
-    if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::L2)) m_camY += VERT_SPEED;
-    if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::R2)) m_camY -= VERT_SPEED;
+    // Orbit camera: position = target - forward * distance
+    int32_t targetX = m_skelX;
+    int32_t targetY = m_skelY + CAM_TARGET_Y;
+    int32_t targetZ = m_skelZ;
+    m_camX = targetX - ((viewRot.vs[0].z.raw() * m_camDist) >> 12);
+    m_camY = targetY - ((viewRot.vs[1].z.raw() * m_camDist) >> 12);
+    m_camZ = targetZ - ((viewRot.vs[2].z.raw() * m_camDist) >> 12);
 
     // Negate Y row: OoT is Y-up, PS1 screen Y goes down.
     psyqo::Matrix33 renderRot = viewRot;
