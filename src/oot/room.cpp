@@ -212,11 +212,22 @@ void RoomScene::renderChunk(const PRM::ChunkDesc& chunk) {
         p.pointB.x = sv1.sx; p.pointB.y = sv1.sy;
         p.pointC.x = sv2.sx; p.pointC.y = sv2.sy;
 
-        psyqo::Color neutral{{.r = 128, .g = 128, .b = 128}};
-        p.setColorA(neutral);
-        p.setColorB(neutral);
-        p.setColorC(neutral);
+        // N64 vertex colors are 0-255 (255 = full bright). PS1 gouraud
+        // modulates tex × color / 128 (128 = 1.0). Halve to match.
+        const auto& c0 = col[idx.v0];
+        const auto& c1 = col[idx.v1];
+        const auto& c2 = col[idx.v2];
+        p.setColorA(psyqo::Color{{.r = uint8_t(c0.r >> 1),
+                                   .g = uint8_t(c0.g >> 1),
+                                   .b = uint8_t(c0.b >> 1)}});
+        p.setColorB(psyqo::Color{{.r = uint8_t(c1.r >> 1),
+                                   .g = uint8_t(c1.g >> 1),
+                                   .b = uint8_t(c1.b >> 1)}});
+        p.setColorC(psyqo::Color{{.r = uint8_t(c2.r >> 1),
+                                   .g = uint8_t(c2.g >> 1),
+                                   .b = uint8_t(c2.b >> 1)}});
 
+        if (idx.tex_id >= g_vramAlloc.numSlots()) continue;
         const auto& ti = g_vramAlloc.info(idx.tex_id);
         p.uvA.u = (uv[idx.v0].u & ti.u_mask) + ti.u_off;
         p.uvA.v = (uv[idx.v0].v & ti.v_mask) + ti.v_off;
