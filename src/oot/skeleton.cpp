@@ -14,14 +14,14 @@ static inline psyqo::Angle ootAngle(int16_t raw) {
 static psyqo::Matrix33 eulerZYX(int16_t rz, int16_t ry, int16_t rx,
                                  const psyqo::Trig<>& trig) {
     auto mz = psyqo::SoftMath::generateRotationMatrix33(
-        ootAngle(rz), psyqo::SoftMath::Axis::Z, trig);
+        -ootAngle(rz), psyqo::SoftMath::Axis::Z, trig);
     auto my = psyqo::SoftMath::generateRotationMatrix33(
-        ootAngle(ry), psyqo::SoftMath::Axis::Y, trig);
+        -ootAngle(ry), psyqo::SoftMath::Axis::Y, trig);
     auto mx = psyqo::SoftMath::generateRotationMatrix33(
-        ootAngle(rx), psyqo::SoftMath::Axis::X, trig);
+        -ootAngle(rx), psyqo::SoftMath::Axis::X, trig);
     psyqo::Matrix33 zy, zyx;
-    psyqo::SoftMath::multiplyMatrix33(mz, my, &zy);
-    psyqo::SoftMath::multiplyMatrix33(zy, mx, &zyx);
+    psyqo::SoftMath::multiplyMatrix33(my, mz, &zy);
+    psyqo::SoftMath::multiplyMatrix33(mx, zy, &zyx);
     return zyx;
 }
 
@@ -46,9 +46,9 @@ void RoomScene::computeBones(const int16_t* frame) {
     int16_t rootX, rootY, rootZ;
     SKM::frameRootPos(frame, rootX, rootY, rootZ);
 
+    // Root bone: position from animation, rotation from limb 0
     int16_t rz, ry, rx;
     SKM::frameLimbRot(frame, 0, rz, ry, rx);
-
     m_bones[0].rot = eulerZYX(rz, ry, rx, app.m_trig);
     m_bones[0].tx = rootX;
     m_bones[0].ty = rootY;
@@ -64,12 +64,11 @@ void RoomScene::computeBoneRecurse(int limbIdx, const BoneState& parent,
     const auto* ls = SKM::limbs(m_skm);
     const auto& limb = ls[limbIdx];
 
+    // World rotation = parent × limb local rotation from animation frame
     int16_t rz, ry, rx;
     SKM::frameLimbRot(frame, limbIdx, rz, ry, rx);
-
-    psyqo::Matrix33 localRot = eulerZYX(rz, ry, rx, app.m_trig);
-
-    psyqo::SoftMath::multiplyMatrix33(parent.rot, localRot, &m_bones[limbIdx].rot);
+    auto limbRot = eulerZYX(rz, ry, rx, app.m_trig);
+    psyqo::SoftMath::multiplyMatrix33(limbRot, parent.rot, &m_bones[limbIdx].rot);
 
     int32_t jx = limb.joint_x, jy = limb.joint_y, jz = limb.joint_z;
     auto& pr = parent.rot;
@@ -118,21 +117,22 @@ void RoomScene::drawLimb(int limbIdx, const psyqo::Matrix33& renderRot,
 
     // View-space rotation = camera × bone world rotation
     psyqo::Matrix33 viewRot;
-    psyqo::SoftMath::multiplyMatrix33(renderRot, m_bones[limbIdx].rot, &viewRot);
+    psyqo::SoftMath::multiplyMatrix33(m_bones[limbIdx].rot, renderRot, &viewRot);
 
-    // View-space translation = camera_rot × bone_world_pos + camera_trans
-    int32_t bx = m_bones[limbIdx].tx + m_skelX;
-    int32_t by = m_bones[limbIdx].ty + m_skelY;
-    int32_t bz = m_bones[limbIdx].tz + m_skelZ;
+    // Bone positions are in model space (100x world). Convert skeleton world
+    // pos + camera translation to model space so GTE works in a single space.
+    int32_t bx = m_bones[limbIdx].tx + m_skelX * SKEL_SCALE;
+    int32_t by = m_bones[limbIdx].ty + m_skelY * SKEL_SCALE;
+    int32_t bz = m_bones[limbIdx].tz + m_skelZ * SKEL_SCALE;
     int32_t vtx = ((renderRot.vs[0].x.raw() * bx +
                     renderRot.vs[0].y.raw() * by +
-                    renderRot.vs[0].z.raw() * bz) >> 12) + camTX;
+                    renderRot.vs[0].z.raw() * bz) >> 12) + camTX * SKEL_SCALE;
     int32_t vty = ((renderRot.vs[1].x.raw() * bx +
                     renderRot.vs[1].y.raw() * by +
-                    renderRot.vs[1].z.raw() * bz) >> 12) + camTY;
+                    renderRot.vs[1].z.raw() * bz) >> 12) + camTY * SKEL_SCALE;
     int32_t vtz = ((renderRot.vs[2].x.raw() * bx +
                     renderRot.vs[2].y.raw() * by +
-                    renderRot.vs[2].z.raw() * bz) >> 12) + camTZ;
+                    renderRot.vs[2].z.raw() * bz) >> 12) + camTZ * SKEL_SCALE;
 
     // Write per-limb view matrix to GTE
     psyqo::GTE::writeUnsafe<psyqo::GTE::PseudoRegister::Rotation>(viewRot);
@@ -165,13 +165,13 @@ void RoomScene::drawLimb(int limbIdx, const psyqo::Matrix33& renderRot,
         int32_t dx1 = sv2.sx - sv0.sx;
         int32_t dy1 = sv2.sy - sv0.sy;
         int32_t cross = dx0 * dy1 - dx1 * dy0;
-        if (cross >= 0) continue;
+        if (cross <= 0) continue;
 
         if (sv0.sx < -512 || sv0.sx > 512 || sv0.sy < -512 || sv0.sy > 512) continue;
         if (sv1.sx < -512 || sv1.sx > 512 || sv1.sy < -512 || sv1.sy > 512) continue;
         if (sv2.sx < -512 || sv2.sx > 512 || sv2.sy < -512 || sv2.sy > 512) continue;
 
-        uint32_t sumZ = uint32_t(sv0.sz) + sv1.sz + sv2.sz;
+        uint32_t sumZ = (uint32_t(sv0.sz) + sv1.sz + sv2.sz) / SKEL_SCALE;
         int32_t otIdx = static_cast<int32_t>((sumZ * (OT_SIZE / 3)) >> 12);
         if (otIdx <= 0 || otIdx >= OT_SIZE) continue;
 
@@ -188,17 +188,18 @@ void RoomScene::drawLimb(int limbIdx, const psyqo::Matrix33& renderRot,
         p.setColorC(neutral);
 
         int texSlot = m_skelTexBase + idx.tex_id;
-        if (idx.tex_id < shdr->num_textures && texSlot < g_vramAlloc.numSlots()) {
-            const auto& ti = g_vramAlloc.info(texSlot);
-            p.uvA.u = (uv[idx.v0].u & ti.u_mask) + ti.u_off;
-            p.uvA.v = (uv[idx.v0].v & ti.v_mask) + ti.v_off;
-            p.uvB.u = (uv[idx.v1].u & ti.u_mask) + ti.u_off;
-            p.uvB.v = (uv[idx.v1].v & ti.v_mask) + ti.v_off;
-            p.uvC.u = (uv[idx.v2].u & ti.u_mask) + ti.u_off;
-            p.uvC.v = (uv[idx.v2].v & ti.v_mask) + ti.v_off;
-            p.tpage = ti.tpage;
-            p.clutIndex = ti.clut;
-        }
+        if (idx.tex_id >= shdr->num_textures || texSlot >= g_vramAlloc.numSlots())
+            continue;
+
+        const auto& ti = g_vramAlloc.info(texSlot);
+        p.uvA.u = (uv[idx.v0].u & ti.u_mask) + ti.u_off;
+        p.uvA.v = (uv[idx.v0].v & ti.v_mask) + ti.v_off;
+        p.uvB.u = (uv[idx.v1].u & ti.u_mask) + ti.u_off;
+        p.uvB.v = (uv[idx.v1].v & ti.v_mask) + ti.v_off;
+        p.uvC.u = (uv[idx.v2].u & ti.u_mask) + ti.u_off;
+        p.uvC.v = (uv[idx.v2].v & ti.v_mask) + ti.v_off;
+        p.tpage = ti.tpage;
+        p.clutIndex = ti.clut;
 
         m_ots[m_parity].insert(frag, otIdx);
         m_triCount++;

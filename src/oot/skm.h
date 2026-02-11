@@ -157,8 +157,9 @@ inline void frameRootPos(const int16_t* frame, int16_t& x, int16_t& y, int16_t& 
 inline void frameLimbRot(const int16_t* frame, int limbIdx,
                          int16_t& rz, int16_t& ry, int16_t& rx) {
     // Limb 0 rotation starts at index 3 (after root pos)
+    // OoT Vec3s stores {x, y, z} — map to rx, ry, rz
     const int16_t* r = &frame[3 + limbIdx * 3];
-    rz = r[0]; ry = r[1]; rx = r[2];
+    rx = r[0]; ry = r[1]; rz = r[2];
 }
 
 // Texture section (same as PRM)
