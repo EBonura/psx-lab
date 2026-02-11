@@ -71,9 +71,9 @@ void RoomScene::frame() {
     // ── Input ────────────────────────────────────────────────────────────
     using Pad = psyqo::SimplePad;
     constexpr int32_t CAM_TARGET_Y = 40;   // look-at height above skeleton root
-    constexpr int32_t CAM_DIST_MIN = 100;
-    constexpr int32_t CAM_DIST_MAX = 3000;
-    constexpr int32_t CAM_ZOOM_SPEED = 20;
+    constexpr int32_t CAM_DIST_MIN = 20;
+    constexpr int32_t CAM_DIST_MAX = 500;
+    constexpr int32_t CAM_ZOOM_SPEED = 10;
 
     // Room cycling: Select button (debounced)
     bool selectNow = app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Select);

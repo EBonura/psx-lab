@@ -60,7 +60,7 @@ void RoomScene::loadRoom(int idx) {
             m_skelZ = sp.z;
             m_camRotY = 0.0_pi;
             m_camRotX = 0.1_pi;
-            m_camDist = 400;
+            m_camDist = 200;
             m_loading = false;
         });
 }
