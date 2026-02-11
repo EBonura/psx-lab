@@ -1,7 +1,7 @@
 TARGET = oot
 TYPE = ps-exe
 
-SRCS = main.cpp
+SRCS = main.cpp room.cpp skeleton.cpp
 
 LDFLAGS += -lgcc
 
