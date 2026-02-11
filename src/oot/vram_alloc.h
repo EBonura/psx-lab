@@ -17,6 +17,7 @@ struct TexInfo {
     psyqo::PrimPieces::TPageAttr tpage;
     psyqo::PrimPieces::ClutIndex clut;
     uint8_t u_off, v_off;
+    uint8_t u_mask, v_mask;  // texel_w-1, texel_h-1 (wrap UVs to texture bounds)
 };
 
 static constexpr int MAX_TEXTURES = 32;
@@ -128,6 +129,10 @@ class Allocator {
         s.info.v_off = static_cast<uint8_t>(vy % 256);
 
         s.info.clut = psyqo::PrimPieces::ClutIndex(cx / 16, cy);
+
+        // UV masks for wrapping (textures are power-of-2)
+        s.info.u_mask = static_cast<uint8_t>(texel_w - 1);
+        s.info.v_mask = static_cast<uint8_t>(texel_h - 1);
 
         return m_numSlots++;
     }
