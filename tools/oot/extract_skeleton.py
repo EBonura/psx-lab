@@ -22,10 +22,11 @@ SKEL_HEADER_OFF = 0x377F4   # FlexSkeletonHeader
 NUM_LIMBS       = 21
 FRAME_SIZE      = 134        # 22×Vec3s + u16 face = 134 bytes per anim frame
 
-# OoT adult Link actor scale (Actor_SetScale 0.01f). All skeleton coordinates
-# (vertices, joint offsets, animation root positions) are in model space and
-# must be divided by this to get world-space coordinates matching room geometry.
-MODEL_SCALE     = 100
+# OoT actor scale factor. Kept at 1 so extraction preserves full model-space
+# precision (int16). The PS1 renderer applies the 1/100 scale at runtime via
+# GTE translation, avoiding the catastrophic integer quantization that occurs
+# when dividing small limb-local vertex coords by 100.
+MODEL_SCALE     = 1
 
 # Animations: (name, frame_count, offset_in_segment, loop)
 ANIMATIONS = [

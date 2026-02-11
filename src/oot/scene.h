@@ -37,6 +37,7 @@ constexpr int SCREEN_W     = 320;
 constexpr int SCREEN_H     = 240;
 constexpr int H_PROJ       = 180;
 constexpr int NUM_ROOMS    = 10;
+constexpr int SKEL_SCALE   = 100;  // OoT Actor_SetScale(0.01) — applied at runtime
 
 // ── Shared types ─────────────────────────────────────────────────────────
 

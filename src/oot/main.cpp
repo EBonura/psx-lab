@@ -134,14 +134,15 @@ void RoomScene::frame() {
     auto rotX = psyqo::SoftMath::generateRotationMatrix33(
         -m_camRotX, psyqo::SoftMath::Axis::X, app.m_trig);
     psyqo::Matrix33 viewRot;
-    psyqo::SoftMath::multiplyMatrix33(rotX, rotY, &viewRot);
+    psyqo::SoftMath::multiplyMatrix33(rotY, rotX, &viewRot);
 
     // Orbit camera: position = target - forward * distance
+    // Forward = row 2 of viewRot (camera Z axis in world space)
     int32_t targetX = m_skelX;
     int32_t targetY = m_skelY + CAM_TARGET_Y;
     int32_t targetZ = m_skelZ;
-    m_camX = targetX - ((viewRot.vs[0].z.raw() * m_camDist) >> 12);
-    m_camY = targetY - ((viewRot.vs[1].z.raw() * m_camDist) >> 12);
+    m_camX = targetX - ((viewRot.vs[2].x.raw() * m_camDist) >> 12);
+    m_camY = targetY - ((viewRot.vs[2].y.raw() * m_camDist) >> 12);
     m_camZ = targetZ - ((viewRot.vs[2].z.raw() * m_camDist) >> 12);
 
     // Negate Y row: OoT is Y-up, PS1 screen Y goes down.
