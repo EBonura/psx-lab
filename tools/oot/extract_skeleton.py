@@ -22,6 +22,11 @@ SKEL_HEADER_OFF = 0x377F4   # FlexSkeletonHeader
 NUM_LIMBS       = 21
 FRAME_SIZE      = 134        # 22×Vec3s + u16 face = 134 bytes per anim frame
 
+# OoT adult Link actor scale (Actor_SetScale 0.01f). All skeleton coordinates
+# (vertices, joint offsets, animation root positions) are in model space and
+# must be divided by this to get world-space coordinates matching room geometry.
+MODEL_SCALE     = 100
+
 # Animations: (name, frame_count, offset_in_segment, loop)
 ANIMATIONS = [
     ("idle", 89, 0x1C3030, True),
@@ -196,9 +201,9 @@ class SkeletonExtractor:
             if limb_off is None:
                 self.limbs.append(((0, 0, 0), 0xFF, 0xFF, 0))
                 continue
-            jx = read_s16(self.data, limb_off)
-            jy = read_s16(self.data, limb_off + 2)
-            jz = read_s16(self.data, limb_off + 4)
+            jx = round(read_s16(self.data, limb_off) / MODEL_SCALE)
+            jy = round(read_s16(self.data, limb_off + 2) / MODEL_SCALE)
+            jz = round(read_s16(self.data, limb_off + 4) / MODEL_SCALE)
             child = self.data[limb_off + 6]
             sibling = self.data[limb_off + 7]
             # LodLimb: dLists[0]=near, dLists[1]=far
@@ -299,9 +304,9 @@ class SkeletonExtractor:
         for i in range(count):
             vo = off + i * 16
             if vo + 16 > len(self.data): break
-            x = read_s16(self.data, vo)
-            y = read_s16(self.data, vo + 2)
-            z = read_s16(self.data, vo + 4)
+            x = round(read_s16(self.data, vo) / MODEL_SCALE)
+            y = round(read_s16(self.data, vo + 2) / MODEL_SCALE)
+            z = round(read_s16(self.data, vo + 4) / MODEL_SCALE)
             s_raw = read_s16(self.data, vo + 8)
             t_raw = read_s16(self.data, vo + 10)
             u = (s_raw >> 5) & 0xFF
@@ -520,9 +525,13 @@ def extract_animations(anim_data: bytes):
                 print(f"  [WARN] Anim '{name}' frame {f} truncated")
                 break
             # Byte-swap 67 big-endian s16 values to little-endian
+            # First 3 values are root position (scale to world space);
+            # remaining 63 s16 are limb rotations + face (no scaling).
             frame_bytes = bytearray(FRAME_SIZE)
             for j in range(67):  # 22 Vec3s (66 s16) + 1 face u16 = 67
                 val = struct.unpack_from(">h", anim_data, frame_off + j * 2)[0]
+                if j < 3:  # root_x, root_y, root_z
+                    val = int(round(val / MODEL_SCALE))
                 struct.pack_into("<h", frame_bytes, j * 2, val)
             frames.append(bytes(frame_bytes))
         anims.append((name, frame_count, loop, frames))
