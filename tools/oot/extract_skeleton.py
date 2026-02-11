@@ -28,6 +28,10 @@ FRAME_SIZE      = 134        # 22×Vec3s + u16 face = 134 bytes per anim frame
 # when dividing small limb-local vertex coords by 100.
 MODEL_SCALE     = 1
 
+# Tunic environment color (baked into I8 textures from gameplay_keep)
+# OoT applies this at runtime via G_SETENVCOLOR before drawing.
+TUNIC_COLOR     = (30, 105, 27)   # Kokiri green (from sTunicColors[])
+
 # Animations: (name, frame_count, offset_in_segment, loop)
 ANIMATIONS = [
     ("idle", 89, 0x1C3030, True),
@@ -57,7 +61,7 @@ SIZ_4b = 0; SIZ_8b = 1; SIZ_16b = 2
 
 SKIP_OPCODES = {
     G_RDPPIPESYNC, G_RDPLOADSYNC, G_RDPTILESYNC, G_SETCOMBINE,
-    G_GEOMETRYMODE, G_SETPRIMCOLOR, G_SETENVCOLOR, G_TEXTURE,
+    G_GEOMETRYMODE, G_SETPRIMCOLOR, G_SETENVCOLOR,
     G_SETOTHERMODE_L, G_SETOTHERMODE_H, G_LOADBLOCK, G_LOADTILE,
     0xED, 0xF6, 0xF7, 0xF8, 0xF9, 0xFF, 0xFE,
 }
@@ -150,9 +154,14 @@ class LimbMesh:
 # ── Skeleton Extractor ───────────────────────────────────────────────────────
 
 class SkeletonExtractor:
-    def __init__(self, obj_data: bytes):
+    def __init__(self, obj_data: bytes, keep_data: bytes = None):
         self.data = obj_data
-        self.segments = {6: obj_data}
+        # Segment 4 = gameplay_keep (common textures: hair, tunic patterns)
+        # Segment 8 = eyes (base at file offset 0x0000, gLinkAdultEyesOpenTex)
+        # Segment 9 = mouth (base at file offset 0x4000, gLinkAdultMouthClosedTex)
+        self.segments = {6: obj_data, 8: obj_data, 9: obj_data[0x4000:]}
+        if keep_data:
+            self.segments[4] = keep_data
         self.limbs = []       # [(joint_pos, child, sibling, dl_far_addr), ...]
         self.limb_meshes = []
         self._vtx_buf = [None] * 64
@@ -164,6 +173,8 @@ class SkeletonExtractor:
         self._tile0_fmt = 0
         self._tile0_siz = 0
         self._cur_tex_id = 0xFF
+        self._scale_s = 0xFFFF  # G_TEXTURE S scale (0xFFFF = 1.0)
+        self._scale_t = 0xFFFF  # G_TEXTURE T scale (0xFFFF = 1.0)
         self.textures = []
         self._tex_dedup = {}
 
@@ -262,6 +273,9 @@ class SkeletonExtractor:
                 if tile == 0:
                     self._tile0_fmt = (w0 >> 21) & 0x07
                     self._tile0_siz = (w0 >> 19) & 0x03
+            elif cmd == G_TEXTURE:
+                self._scale_s = (w1 >> 16) & 0xFFFF
+                self._scale_t = w1 & 0xFFFF
             elif cmd == G_SETTILESIZE:
                 self._on_settilesize(w0, w1)
             elif cmd == G_DL:
@@ -310,6 +324,10 @@ class SkeletonExtractor:
             z = round(read_s16(self.data, vo + 4) / MODEL_SCALE)
             s_raw = read_s16(self.data, vo + 8)
             t_raw = read_s16(self.data, vo + 10)
+            if self._scale_s != 0xFFFF:
+                s_raw = (s_raw * self._scale_s) >> 16
+            if self._scale_t != 0xFFFF:
+                t_raw = (t_raw * self._scale_t) >> 16
             u = (s_raw >> 5) & 0xFF
             v = (t_raw >> 5) & 0xFF
             r = self.data[vo + 12]; g = self.data[vo + 13]
@@ -333,6 +351,33 @@ class SkeletonExtractor:
 
     # ── Texture Conversion ───────────────────────────────────────────────────
 
+    @staticmethod
+    def _next_pow2(n):
+        p = 1
+        while p < n: p <<= 1
+        return p
+
+    def _pad_to_pow2(self, tex):
+        """Pad texture to next power-of-2 dimensions for PS1 UV bitmask wrapping."""
+        pw = self._next_pow2(tex.width)
+        ph = self._next_pow2(tex.height)
+        if pw == tex.width and ph == tex.height:
+            return
+        if tex.ps1_4bit:
+            old_bpr = tex.width // 2
+            new_bpr = pw // 2
+        else:
+            old_bpr = tex.width
+            new_bpr = pw
+        padded = bytearray(new_bpr * ph)
+        for row in range(tex.height):
+            padded[row * new_bpr : row * new_bpr + old_bpr] = \
+                tex.ps1_pixels[row * old_bpr : row * old_bpr + old_bpr]
+        tex.ps1_pixels = bytes(padded)
+        print(f"    padded {tex.width}x{tex.height} -> {pw}x{ph}")
+        tex.width = pw
+        tex.height = ph
+
     def finalize_textures(self):
         for i, tex in enumerate(self.textures):
             seg = (tex.timg_addr >> 24) & 0x0F
@@ -349,10 +394,12 @@ class SkeletonExtractor:
             elif tex.fmt == FMT_IA and tex.siz == SIZ_8b:
                 self._convert_ia8(tex)
             elif tex.fmt == FMT_I and tex.siz == SIZ_8b:
-                self._convert_i8(tex)
+                tint = TUNIC_COLOR if seg == 4 else None
+                self._convert_i8(tex, tint)
             else:
                 print(f"  [WARN] Tex {i}: unsupported fmt={tex.fmt} siz={tex.siz}")
                 self._make_fallback(tex)
+            self._pad_to_pow2(tex)
             bpp = "4bit" if tex.ps1_4bit else "8bit"
             print(f"  Tex {i:2d}: {tex.width:3d}x{tex.height:<3d} "
                   f"fmt={tex.fmt} siz={tex.siz} -> {bpp} "
@@ -465,15 +512,21 @@ class SkeletonExtractor:
             ps1c.append((a << 15) | (g5 << 10) | (g5 << 5) | g5)
         self._build_indexed_from_colors(tex, ps1c)
 
-    def _convert_i8(self, tex):
+    def _convert_i8(self, tex, tint=None):
         pix_buf, pix_off = self.resolve_any(tex.timg_addr)
         if pix_buf is None: self._make_fallback(tex); return
         npix = tex.width * tex.height
         if pix_off + npix > len(pix_buf): self._make_fallback(tex); return
         ps1c = []
         for j in range(npix):
-            g5 = pix_buf[pix_off + j] >> 3
-            ps1c.append((1 << 15) | (g5 << 10) | (g5 << 5) | g5)
+            i = pix_buf[pix_off + j]
+            if tint:
+                r5 = (i * tint[0] // 255) >> 3
+                g5 = (i * tint[1] // 255) >> 3
+                b5 = (i * tint[2] // 255) >> 3
+            else:
+                r5 = g5 = b5 = i >> 3
+            ps1c.append((1 << 15) | (b5 << 10) | (g5 << 5) | r5)
         self._build_indexed_from_colors(tex, ps1c)
 
     def _build_indexed_from_colors(self, tex, ps1_colors):
@@ -731,9 +784,17 @@ def main():
     anim_data = load_file(rom, anim_entry)
     print(f"  Decompressed: {len(anim_data)} bytes")
 
+    # Load gameplay_keep (segment 4 — shared textures: hair, tunic patterns)
+    keep_entry = dma.get("gameplay_keep")
+    keep_data = None
+    if keep_entry:
+        print(f"Loading gameplay_keep ({keep_entry.vrom_size} bytes)...")
+        keep_data = load_file(rom, keep_entry)
+        print(f"  Decompressed: {len(keep_data)} bytes")
+
     # Parse skeleton
     print(f"\nParsing skeleton...")
-    ext = SkeletonExtractor(obj_data)
+    ext = SkeletonExtractor(obj_data, keep_data)
     ext.parse_skeleton()
     ext.extract_meshes()
 
