@@ -89,12 +89,11 @@ class RoomScene final : public psyqo::Scene {
     void start(StartReason reason) override;
     void frame() override;
 
-    // Camera (freefly)
-    psyqo::Angle m_camRotY;
-    psyqo::Angle m_camRotX;
-    int32_t m_camX = 0;
-    int32_t m_camY = 200;
-    int32_t m_camZ = -2500;
+    // Camera (orbit around skeleton)
+    psyqo::Angle m_camRotY;      // orbit yaw
+    psyqo::Angle m_camRotX;      // orbit pitch
+    int32_t m_camDist = 400;     // orbit radius
+    int32_t m_camX = 0, m_camY = 0, m_camZ = 0;  // computed each frame
 
     // Double-buffered rendering resources
     psyqo::OrderingTable<OT_SIZE> m_ots[2];

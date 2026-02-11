@@ -53,16 +53,14 @@ void RoomScene::loadRoom(int idx) {
             m_prm = m_roomBuf.data();
             m_needUpload = (m_prm != nullptr);
 
-            // Place skeleton at spawn point, camera behind it
+            // Place skeleton at spawn point, reset orbit camera
             const auto& sp = ROOM_SPAWNS[m_roomIdx];
             m_skelX = sp.x;
             m_skelY = sp.y;
             m_skelZ = sp.z;
-            m_camX = sp.x;
-            m_camY = sp.y + 200;
-            m_camZ = sp.z - 500;
             m_camRotY = 0.0_pi;
             m_camRotX = 0.1_pi;
+            m_camDist = 400;
             m_loading = false;
         });
 }
@@ -197,7 +195,7 @@ void RoomScene::renderChunk(const PRM::ChunkDesc& chunk) {
         int32_t dx1 = sv2.sx - sv0.sx;
         int32_t dy1 = sv2.sy - sv0.sy;
         int32_t cross = dx0 * dy1 - dx1 * dy0;
-        if (cross >= 0) continue;
+        if (cross <= 0) continue;
 
         if (sv0.sx < -512 || sv0.sx > 512 || sv0.sy < -512 || sv0.sy > 512) continue;
         if (sv1.sx < -512 || sv1.sx > 512 || sv1.sy < -512 || sv1.sy > 512) continue;
