@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- mkpsxiso disc layout for Celeste PS1 port -->
+<iso_project image_name="celeste.bin" cue_sheet="celeste.cue">
+  <track type="data">
+    <identifiers
+      system        ="PLAYSTATION"
+      application   ="PLAYSTATION"
+      volume        ="CELESTE"
+      volume_set    ="CELESTE"
+      publisher     =""
+      data_preparer =""
+    />
+    <directory_tree>
+      <file name="SYSTEM.CNF"  source="SYSTEM.CNF"/>
+      <file name="CELESTE.EXE" source="../../release/celeste.ps-exe"/>
+      <file name="PADDING.DAT" source="PADDING.DAT"/>
+    </directory_tree>
+  </track>
+</iso_project>

@@ -15,4 +15,9 @@ deploy: all
 	@cp $(TARGET).ps-exe ../../release/$(TARGET).ps-exe
 	@echo "Deployed to ../../release/$(TARGET).ps-exe"
 
+.PHONY: disc
+disc: deploy
+	mkpsxiso -y ../../tools/celeste/cd.xml -o ../../release/celeste.bin -c ../../release/celeste.cue
+	@echo "CD image: ../../release/celeste.bin / celeste.cue"
+
 .DEFAULT_GOAL := deploy
