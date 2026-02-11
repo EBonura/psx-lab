@@ -127,6 +127,7 @@ class RoomScene final : public psyqo::Scene {
     psyqo::Buffer<uint8_t> m_roomBuf;
     const uint8_t* m_prm = nullptr;
     bool m_loading = false;
+    bool m_needUpload = false;
     bool m_selectHeld = false;
 
     void loadRoom(int idx);
@@ -181,9 +182,9 @@ void RoomScene::loadRoom(int idx) {
         [this](psyqo::Buffer<uint8_t>&& buffer) {
             m_roomBuf = eastl::move(buffer);
             m_prm = m_roomBuf.data();
-            if (m_prm) {
-                uploadTextures();
-            }
+            // Defer VRAM upload to next frame() — calling uploadToVRAM
+            // inside a CD callback can conflict with in-flight GPU DMA.
+            m_needUpload = (m_prm != nullptr);
             // Reset camera for new room
             m_camRotY = 0.0_pi;
             m_camRotX = 0.1_pi;
@@ -228,6 +229,16 @@ void RoomScene::uploadTextures() {
 // ── Frame rendering ──────────────────────────────────────────────────────
 
 void RoomScene::frame() {
+    // Wait for previous frame's chain DMA to finish — needed because
+    // font.printf and uploadToVRAM both use GPU DMA, and CD-ROM DMA
+    // can delay the chain completion past the start of the next frame.
+    gpu().waitChainIdle();
+
+    if (m_needUpload) {
+        uploadTextures();
+        m_needUpload = false;
+    }
+
     // ── Input ────────────────────────────────────────────────────────────
     using Pad = psyqo::SimplePad;
     constexpr int32_t MOVE_SPEED = 40;
