@@ -218,9 +218,9 @@ class SkeletonExtractor:
             jz = round(read_s16(self.data, limb_off + 4) / MODEL_SCALE)
             child = self.data[limb_off + 6]
             sibling = self.data[limb_off + 7]
-            # LodLimb: dLists[0]=near, dLists[1]=far
-            dl_far = read_u32(self.data, limb_off + 12)
-            self.limbs.append(((jx, jy, jz), child, sibling, dl_far))
+            # LodLimb: dLists[0]=near, dLists[1]=far — use near for close-up PS1 view
+            dl_near = read_u32(self.data, limb_off + 8)
+            self.limbs.append(((jx, jy, jz), child, sibling, dl_near))
 
     def extract_meshes(self):
         total_v = total_t = 0

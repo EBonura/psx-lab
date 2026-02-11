@@ -20,7 +20,7 @@ struct TexInfo {
     uint8_t u_mask, v_mask;  // texel_w-1, texel_h-1 (wrap UVs to texture bounds)
 };
 
-static constexpr int MAX_TEXTURES = 64;
+static constexpr int MAX_TEXTURES = 96;
 
 // Texture region: right of framebuffers, above CLUT rows
 static constexpr int16_t TEX_X0   = 320;
