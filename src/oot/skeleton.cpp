@@ -121,9 +121,9 @@ void RoomScene::drawLimb(int limbIdx, const psyqo::Matrix33& renderRot,
     psyqo::SoftMath::multiplyMatrix33(renderRot, m_bones[limbIdx].rot, &viewRot);
 
     // View-space translation = camera_rot × bone_world_pos + camera_trans
-    int32_t bx = m_bones[limbIdx].tx;
-    int32_t by = m_bones[limbIdx].ty;
-    int32_t bz = m_bones[limbIdx].tz;
+    int32_t bx = m_bones[limbIdx].tx + m_skelX;
+    int32_t by = m_bones[limbIdx].ty + m_skelY;
+    int32_t bz = m_bones[limbIdx].tz + m_skelZ;
     int32_t vtx = ((renderRot.vs[0].x.raw() * bx +
                     renderRot.vs[0].y.raw() * by +
                     renderRot.vs[0].z.raw() * bz) >> 12) + camTX;

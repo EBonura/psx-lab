@@ -58,8 +58,14 @@ extern ScreenVtx g_scratch[MAX_VTX];
 
 // ── Room table (defined in room.cpp) ─────────────────────────────────────
 
+struct SpawnPoint {
+    int16_t x, y, z;
+    int16_t rot_y;  // OoT s16 binary angle
+};
+
 extern const char* const ROOM_FILES[NUM_ROOMS];
 extern const char* const ROOM_NAMES[NUM_ROOMS];
+extern const SpawnPoint ROOM_SPAWNS[NUM_ROOMS];
 
 // ── Application ──────────────────────────────────────────────────────────
 
@@ -118,6 +124,7 @@ class RoomScene final : public psyqo::Scene {
     bool m_skelLoaded = false;
     bool m_skelVisible = true;
     int m_skelTexBase = 0;
+    int32_t m_skelX = 0, m_skelY = 0, m_skelZ = 0;  // world position
 
     // Animation
     int m_animIdx = 0;

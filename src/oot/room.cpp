@@ -26,6 +26,20 @@ const char* const ROOM_NAMES[NUM_ROOMS] = {
     "Kakariko",
 };
 
+// Spawn 0 from each room's scene (world-space coordinates)
+const SpawnPoint ROOM_SPAWNS[NUM_ROOMS] = {
+    {    -4,     0,   603, -32768},  // Deku Tree 1
+    {    -4,     0,   603, -32768},  // Deku Tree 2 (same scene)
+    {   -68,   -80,   941,  25486},  // Kokiri Forest
+    {   160,     0,  1415,  -3641},  // Hyrule Field
+    {   110,   309,   781, -32768},  // Forest Temple
+    {     5,     0,   983, -32768},  // Fire Temple
+    {  -182,   620,   969, -32768},  // Water Temple
+    {  -254,   -63,   734, -32768},  // Shadow Temple
+    {  -225,  1086,  3743, -27307},  // Lon Lon Ranch
+    { -2649,   138,  1063,  16384},  // Kakariko
+};
+
 // ── Room loading via CD-ROM ──────────────────────────────────────────────
 
 void RoomScene::loadRoom(int idx) {
@@ -38,11 +52,17 @@ void RoomScene::loadRoom(int idx) {
             m_roomBuf = eastl::move(buffer);
             m_prm = m_roomBuf.data();
             m_needUpload = (m_prm != nullptr);
+
+            // Place skeleton at spawn point, camera behind it
+            const auto& sp = ROOM_SPAWNS[m_roomIdx];
+            m_skelX = sp.x;
+            m_skelY = sp.y;
+            m_skelZ = sp.z;
+            m_camX = sp.x;
+            m_camY = sp.y + 200;
+            m_camZ = sp.z - 500;
             m_camRotY = 0.0_pi;
             m_camRotX = 0.1_pi;
-            m_camX = 0;
-            m_camY = 200;
-            m_camZ = -2500;
             m_loading = false;
         });
 }
