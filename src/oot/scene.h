@@ -128,7 +128,7 @@ class RoomScene final : public psyqo::Scene {
     // Animation
     int m_animIdx = 0;
     int m_animFrame = 0;
-    bool m_animPaused = false;
+    bool m_animPaused = true;
 
     // Input debounce
     bool m_triangleHeld = false;
