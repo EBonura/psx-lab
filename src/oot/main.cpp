@@ -1,10 +1,12 @@
 // Zelda: Ocarina of Time — PS1 Port
 // CD-ROM streaming room renderer with gouraud-textured triangles.
+// Skeletal mesh overlay with hierarchical bone transforms.
 //
 // Rooms are loaded from disc on demand via CDRomDevice + ISO9660Parser.
 // Only one room is resident in RAM at a time. Select button cycles rooms.
+// Link's skeleton renders as an overlay at world origin with animation.
 //
-// Render pipeline per chunk:
+// Render pipeline per chunk/limb:
 //   1. Batch-transform ALL vertices via GTE RTPT (3 at a time)
 //   2. For each triangle:
 //      a. Software NCLIP (cross product on pre-transformed screen coords)
@@ -35,6 +37,7 @@
 #include "psyqo-paths/cdrom-loader.hh"
 
 #include "prm.h"
+#include "skm.h"
 #include "vram_alloc.h"
 
 using namespace psyqo::trig_literals;
@@ -45,7 +48,7 @@ namespace {
 // ── Tuning constants ─────────────────────────────────────────────────────
 
 constexpr int OT_SIZE      = 1024;
-constexpr int MAX_TRIS     = 600;
+constexpr int MAX_TRIS     = 1200;
 constexpr int MAX_VTX      = 256;
 constexpr int SCREEN_W     = 320;
 constexpr int SCREEN_H     = 240;
@@ -87,6 +90,36 @@ struct ScreenVtx {
 };
 
 static ScreenVtx s_scratch[MAX_VTX];
+
+// ── OoT angle conversion & Euler rotation ───────────────────────────────
+
+// OoT s16 binary angle (0x10000 = full circle) → psyqo::Angle (FixedPoint<10>)
+// Full circle: OoT = 65536, psyqo = 2048. Ratio = 32.
+static inline psyqo::Angle ootAngle(int16_t raw) {
+    return psyqo::Angle(static_cast<int32_t>(raw) / 32, psyqo::Angle::RAW);
+}
+
+// Build ZYX Euler rotation matrix matching OoT's Matrix_TranslateRotateZYX
+static psyqo::Matrix33 eulerZYX(int16_t rz, int16_t ry, int16_t rx,
+                                 const psyqo::Trig<>& trig) {
+    auto mz = psyqo::SoftMath::generateRotationMatrix33(
+        ootAngle(rz), psyqo::SoftMath::Axis::Z, trig);
+    auto my = psyqo::SoftMath::generateRotationMatrix33(
+        ootAngle(ry), psyqo::SoftMath::Axis::Y, trig);
+    auto mx = psyqo::SoftMath::generateRotationMatrix33(
+        ootAngle(rx), psyqo::SoftMath::Axis::X, trig);
+    psyqo::Matrix33 zy, zyx;
+    psyqo::SoftMath::multiplyMatrix33(mz, my, &zy);
+    psyqo::SoftMath::multiplyMatrix33(zy, mx, &zyx);
+    return zyx;
+}
+
+// ── Bone transform state ─────────────────────────────────────────────────
+
+struct BoneState {
+    psyqo::Matrix33 rot;    // world-space rotation
+    int32_t tx, ty, tz;     // world-space translation (integer units)
+};
 
 // ── Application ──────────────────────────────────────────────────────────
 
@@ -136,11 +169,39 @@ class RoomScene final : public psyqo::Scene {
     bool m_startHeld = false;
     eastl::array<psyqo::Fragments::SimpleFragment<psyqo::Prim::TexturedQuad>, VramAlloc::MAX_TEXTURES> m_debugQuads[2];
 
+    // ── Skeleton state ───────────────────────────────────────────────────
+    psyqo::Buffer<uint8_t> m_skelBuf;
+    const uint8_t* m_skm = nullptr;
+    SKM::LimbMeshCache m_limbCache;
+    bool m_skelLoaded = false;
+    bool m_skelVisible = true;
+    int m_skelTexBase = 0;
+
+    // Animation
+    int m_animIdx = 0;
+    int m_animFrame = 0;
+    bool m_animPaused = false;
+
+    // Input debounce
+    bool m_triangleHeld = false;
+    bool m_crossHeld = false;
+    bool m_circleHeld = false;
+
+    // Bone hierarchy
+    BoneState m_bones[21];
+
+    void loadSkeleton();
     void loadRoom(int idx);
     void uploadTextures();
     void renderChunk(const PRM::ChunkDesc& chunk);
     void transformVertices(const PRM::Pos* pos, int count);
     void renderDebugGrid();
+
+    // Skeleton rendering
+    void computeBones(const int16_t* frame);
+    void computeBoneRecurse(int limbIdx, const BoneState& parent, const int16_t* frame);
+    void renderSkeleton(const psyqo::Matrix33& renderRot, int32_t camTX, int32_t camTY, int32_t camTZ);
+    void drawLimb(int limbIdx, const psyqo::Matrix33& renderRot, int32_t camTX, int32_t camTY, int32_t camTZ);
 };
 
 OotApp app;
@@ -175,7 +236,24 @@ void RoomScene::start(StartReason) {
     psyqo::GTE::write<psyqo::GTE::Register::ZSF3, psyqo::GTE::Unsafe>(OT_SIZE / 3);
     psyqo::GTE::write<psyqo::GTE::Register::ZSF4, psyqo::GTE::Unsafe>(OT_SIZE / 4);
 
-    loadRoom(0);
+    // Load skeleton first, then room (CD loads are sequential)
+    loadSkeleton();
+}
+
+// ── Skeleton loading via CD-ROM ─────────────────────────────────────────
+
+void RoomScene::loadSkeleton() {
+    app.m_loader.readFile("LINK.SKM;1", app.m_isoParser,
+        [this](psyqo::Buffer<uint8_t>&& buffer) {
+            m_skelBuf = eastl::move(buffer);
+            if (m_skelBuf.size() > sizeof(SKM::Header)) {
+                m_skm = m_skelBuf.data();
+                m_limbCache.build(m_skm);
+                m_skelLoaded = true;
+            }
+            // Chain: load first room after skeleton
+            loadRoom(0);
+        });
 }
 
 // ── Room loading via CD-ROM ─────────────────────────────────────────────
@@ -202,34 +280,234 @@ void RoomScene::loadRoom(int idx) {
         });
 }
 
-// ── Upload PRM textures to VRAM via allocator ────────────────────────────
+// ── Upload textures to VRAM (room + skeleton) ───────────────────────────
 
 void RoomScene::uploadTextures() {
-    const auto* hdr = PRM::header(m_prm);
-    const auto* descs = PRM::texDescs(m_prm);
-    const uint8_t* tdata = PRM::texData(m_prm);
-
     s_vramAlloc.reset();
 
-    for (int i = 0; i < hdr->num_textures; i++) {
-        const auto& td = descs[i];
-        uint16_t clut_n = PRM::texClutCount(td);
+    // Upload room textures
+    if (m_prm) {
+        const auto* hdr = PRM::header(m_prm);
+        const auto* descs = PRM::texDescs(m_prm);
+        const uint8_t* tdata = PRM::texData(m_prm);
 
-        int slot = s_vramAlloc.alloc(td.width, td.height, td.format, clut_n);
-        if (slot < 0) continue;  // VRAM full — skip
+        for (int i = 0; i < hdr->num_textures; i++) {
+            const auto& td = descs[i];
+            uint16_t clut_n = PRM::texClutCount(td);
 
-        // Upload pixel data
-        const uint16_t* pix = reinterpret_cast<const uint16_t*>(
-            tdata + td.data_offset);
-        gpu().uploadToVRAM(pix, s_vramAlloc.pixelRect(slot));
+            int slot = s_vramAlloc.alloc(td.width, td.height, td.format, clut_n);
+            if (slot < 0) continue;
 
-        // Upload CLUT (immediately after pixel data)
-        uint32_t pix_bytes = PRM::texPixelSize(td);
-        // Align to 2 bytes (CLUT is uint16_t array)
-        pix_bytes = (pix_bytes + 1) & ~1u;
-        const uint16_t* clut = reinterpret_cast<const uint16_t*>(
-            tdata + td.data_offset + pix_bytes);
-        gpu().uploadToVRAM(clut, s_vramAlloc.clutRect(slot));
+            const uint16_t* pix = reinterpret_cast<const uint16_t*>(
+                tdata + td.data_offset);
+            gpu().uploadToVRAM(pix, s_vramAlloc.pixelRect(slot));
+
+            uint32_t pix_bytes = PRM::texPixelSize(td);
+            pix_bytes = (pix_bytes + 1) & ~1u;
+            const uint16_t* clut = reinterpret_cast<const uint16_t*>(
+                tdata + td.data_offset + pix_bytes);
+            gpu().uploadToVRAM(clut, s_vramAlloc.clutRect(slot));
+        }
+    }
+
+    // Upload skeleton textures (appended after room textures)
+    m_skelTexBase = s_vramAlloc.numSlots();
+    if (m_skm) {
+        const auto* shdr = SKM::header(m_skm);
+        const auto* sdescs = SKM::texDescs(m_skm);
+        const uint8_t* stdata = SKM::texData(m_skm);
+
+        for (int i = 0; i < shdr->num_textures; i++) {
+            const auto& td = sdescs[i];
+            uint16_t clut_n = SKM::texClutCount(td);
+
+            int slot = s_vramAlloc.alloc(td.width, td.height, td.format, clut_n);
+            if (slot < 0) continue;
+
+            const uint16_t* pix = reinterpret_cast<const uint16_t*>(
+                stdata + td.data_offset);
+            gpu().uploadToVRAM(pix, s_vramAlloc.pixelRect(slot));
+
+            uint32_t pix_bytes = SKM::texPixelSize(td);
+            pix_bytes = (pix_bytes + 1) & ~1u;
+            const uint16_t* clut = reinterpret_cast<const uint16_t*>(
+                stdata + td.data_offset + pix_bytes);
+            gpu().uploadToVRAM(clut, s_vramAlloc.clutRect(slot));
+        }
+    }
+}
+
+// ── Bone hierarchy computation ──────────────────────────────────────────
+
+void RoomScene::computeBones(const int16_t* frame) {
+    // Root limb: position from animation, rotation from limb 0
+    int16_t rootX, rootY, rootZ;
+    SKM::frameRootPos(frame, rootX, rootY, rootZ);
+
+    int16_t rz, ry, rx;
+    SKM::frameLimbRot(frame, 0, rz, ry, rx);
+
+    m_bones[0].rot = eulerZYX(rz, ry, rx, app.m_trig);
+    m_bones[0].tx = rootX;
+    m_bones[0].ty = rootY;
+    m_bones[0].tz = rootZ;
+
+    const auto* ls = SKM::limbs(m_skm);
+    if (ls[0].child != 0xFF)
+        computeBoneRecurse(ls[0].child, m_bones[0], frame);
+}
+
+void RoomScene::computeBoneRecurse(int limbIdx, const BoneState& parent,
+                                    const int16_t* frame) {
+    const auto* ls = SKM::limbs(m_skm);
+    const auto& limb = ls[limbIdx];
+
+    int16_t rz, ry, rx;
+    SKM::frameLimbRot(frame, limbIdx, rz, ry, rx);
+
+    // Local rotation from animation
+    psyqo::Matrix33 localRot = eulerZYX(rz, ry, rx, app.m_trig);
+
+    // World rotation = parent × local
+    psyqo::SoftMath::multiplyMatrix33(parent.rot, localRot, &m_bones[limbIdx].rot);
+
+    // World position = parent.pos + parent.rot × limb.jointPos
+    int32_t jx = limb.joint_x, jy = limb.joint_y, jz = limb.joint_z;
+    auto& pr = parent.rot;
+    m_bones[limbIdx].tx = parent.tx +
+        ((pr.vs[0].x.raw() * jx + pr.vs[0].y.raw() * jy + pr.vs[0].z.raw() * jz) >> 12);
+    m_bones[limbIdx].ty = parent.ty +
+        ((pr.vs[1].x.raw() * jx + pr.vs[1].y.raw() * jy + pr.vs[1].z.raw() * jz) >> 12);
+    m_bones[limbIdx].tz = parent.tz +
+        ((pr.vs[2].x.raw() * jx + pr.vs[2].y.raw() * jy + pr.vs[2].z.raw() * jz) >> 12);
+
+    if (limb.child != 0xFF)
+        computeBoneRecurse(limb.child, m_bones[limbIdx], frame);
+    if (limb.sibling != 0xFF)
+        computeBoneRecurse(limb.sibling, parent, frame);
+}
+
+// ── Skeleton rendering ──────────────────────────────────────────────────
+
+void RoomScene::renderSkeleton(const psyqo::Matrix33& renderRot,
+                                int32_t camTX, int32_t camTY, int32_t camTZ) {
+    if (!m_skm) return;
+
+    const auto* shdr = SKM::header(m_skm);
+
+    // Advance animation
+    if (!m_animPaused) {
+        m_animFrame++;
+        const auto* ad = &SKM::animDescs(m_skm)[m_animIdx];
+        if (m_animFrame >= ad->frame_count) {
+            m_animFrame = (ad->flags & 1) ? 0 : ad->frame_count - 1;
+        }
+    }
+
+    // Get current frame data
+    const int16_t* frame = SKM::animFrame(m_skm, m_animIdx, m_animFrame);
+
+    // Compute bone hierarchy
+    computeBones(frame);
+
+    // Draw each limb
+    for (int i = 0; i < shdr->num_limbs; i++) {
+        drawLimb(i, renderRot, camTX, camTY, camTZ);
+    }
+}
+
+void RoomScene::drawLimb(int limbIdx, const psyqo::Matrix33& renderRot,
+                          int32_t camTX, int32_t camTY, int32_t camTZ) {
+    const auto* ls = SKM::limbs(m_skm);
+    if (ls[limbIdx].num_verts == 0 || ls[limbIdx].num_tris == 0) return;
+
+    // View-space rotation = camera × bone world rotation
+    psyqo::Matrix33 viewRot;
+    psyqo::SoftMath::multiplyMatrix33(renderRot, m_bones[limbIdx].rot, &viewRot);
+
+    // View-space translation = camera_rot × bone_world_pos + camera_trans
+    int32_t bx = m_bones[limbIdx].tx;
+    int32_t by = m_bones[limbIdx].ty;
+    int32_t bz = m_bones[limbIdx].tz;
+    int32_t vtx = ((renderRot.vs[0].x.raw() * bx +
+                    renderRot.vs[0].y.raw() * by +
+                    renderRot.vs[0].z.raw() * bz) >> 12) + camTX;
+    int32_t vty = ((renderRot.vs[1].x.raw() * bx +
+                    renderRot.vs[1].y.raw() * by +
+                    renderRot.vs[1].z.raw() * bz) >> 12) + camTY;
+    int32_t vtz = ((renderRot.vs[2].x.raw() * bx +
+                    renderRot.vs[2].y.raw() * by +
+                    renderRot.vs[2].z.raw() * bz) >> 12) + camTZ;
+
+    // Write per-limb view matrix to GTE
+    psyqo::GTE::writeUnsafe<psyqo::GTE::PseudoRegister::Rotation>(viewRot);
+    psyqo::GTE::write<psyqo::GTE::Register::TRX, psyqo::GTE::Unsafe>(
+        static_cast<uint32_t>(vtx));
+    psyqo::GTE::write<psyqo::GTE::Register::TRY, psyqo::GTE::Unsafe>(
+        static_cast<uint32_t>(vty));
+    psyqo::GTE::write<psyqo::GTE::Register::TRZ, psyqo::GTE::Unsafe>(
+        static_cast<uint32_t>(vtz));
+
+    // Transform limb vertices
+    const auto* pos = m_limbCache.positions(m_skm, limbIdx);
+    transformVertices(reinterpret_cast<const PRM::Pos*>(pos), ls[limbIdx].num_verts);
+
+    // Emit textured triangles
+    const auto* uv = m_limbCache.uvs(m_skm, limbIdx);
+    const auto* tri = m_limbCache.triangles(m_skm, limbIdx);
+    const auto* shdr = SKM::header(m_skm);
+
+    for (int t = 0; t < ls[limbIdx].num_tris && m_triCount < MAX_TRIS; t++) {
+        const auto& idx = tri[t];
+        const auto& sv0 = s_scratch[idx.v0];
+        const auto& sv1 = s_scratch[idx.v1];
+        const auto& sv2 = s_scratch[idx.v2];
+
+        if (sv0.sz == 0 || sv1.sz == 0 || sv2.sz == 0) continue;
+
+        int32_t dx0 = sv1.sx - sv0.sx;
+        int32_t dy0 = sv1.sy - sv0.sy;
+        int32_t dx1 = sv2.sx - sv0.sx;
+        int32_t dy1 = sv2.sy - sv0.sy;
+        int32_t cross = dx0 * dy1 - dx1 * dy0;
+        if (cross >= 0) continue;
+
+        if (sv0.sx < -512 || sv0.sx > 512 || sv0.sy < -512 || sv0.sy > 512) continue;
+        if (sv1.sx < -512 || sv1.sx > 512 || sv1.sy < -512 || sv1.sy > 512) continue;
+        if (sv2.sx < -512 || sv2.sx > 512 || sv2.sy < -512 || sv2.sy > 512) continue;
+
+        uint32_t sumZ = uint32_t(sv0.sz) + sv1.sz + sv2.sz;
+        int32_t otIdx = static_cast<int32_t>((sumZ * (OT_SIZE / 3)) >> 12);
+        if (otIdx <= 0 || otIdx >= OT_SIZE) continue;
+
+        auto& frag = m_tris[m_parity][m_triCount];
+        auto& p = frag.primitive;
+
+        p.pointA.x = sv0.sx; p.pointA.y = sv0.sy;
+        p.pointB.x = sv1.sx; p.pointB.y = sv1.sy;
+        p.pointC.x = sv2.sx; p.pointC.y = sv2.sy;
+
+        psyqo::Color neutral{{.r = 128, .g = 128, .b = 128}};
+        p.setColorA(neutral);
+        p.setColorB(neutral);
+        p.setColorC(neutral);
+
+        // Resolve texture: skeleton tex_id + base offset
+        int texSlot = m_skelTexBase + idx.tex_id;
+        if (idx.tex_id < shdr->num_textures && texSlot < s_vramAlloc.numSlots()) {
+            const auto& ti = s_vramAlloc.info(texSlot);
+            p.uvA.u = (uv[idx.v0].u & ti.u_mask) + ti.u_off;
+            p.uvA.v = (uv[idx.v0].v & ti.v_mask) + ti.v_off;
+            p.uvB.u = (uv[idx.v1].u & ti.u_mask) + ti.u_off;
+            p.uvB.v = (uv[idx.v1].v & ti.v_mask) + ti.v_off;
+            p.uvC.u = (uv[idx.v2].u & ti.u_mask) + ti.u_off;
+            p.uvC.v = (uv[idx.v2].v & ti.v_mask) + ti.v_off;
+            p.tpage = ti.tpage;
+            p.clutIndex = ti.clut;
+        }
+
+        m_ots[m_parity].insert(frag, otIdx);
+        m_triCount++;
     }
 }
 
@@ -265,6 +543,25 @@ void RoomScene::frame() {
     m_startHeld = startNow;
 
     if (m_debugView) { renderDebugGrid(); return; }
+
+    // Skeleton toggle: Triangle (debounced)
+    bool triNow = app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Triangle);
+    if (triNow && !m_triangleHeld) m_skelVisible = !m_skelVisible;
+    m_triangleHeld = triNow;
+
+    // Animation controls (Circle = next anim, Cross = pause)
+    if (m_skelVisible && m_skelLoaded) {
+        bool circNow = app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Circle);
+        if (circNow && !m_circleHeld) {
+            m_animIdx = (m_animIdx + 1) % SKM::header(m_skm)->num_anims;
+            m_animFrame = 0;
+        }
+        m_circleHeld = circNow;
+
+        bool crossNow = app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Cross);
+        if (crossNow && !m_crossHeld) m_animPaused = !m_animPaused;
+        m_crossHeld = crossNow;
+    }
 
     // Rotation
     if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Left))  m_camRotY -= 0.02_pi;
@@ -306,9 +603,6 @@ void RoomScene::frame() {
     renderRot.vs[1].y = -renderRot.vs[1].y;
     renderRot.vs[1].z = -renderRot.vs[1].z;
 
-    // Write Y-flipped rotation to GTE
-    psyqo::GTE::writeUnsafe<psyqo::GTE::PseudoRegister::Rotation>(renderRot);
-
     // Translation = -renderRot * camPos
     int32_t tx = -((renderRot.vs[0].x.raw() * m_camX +
                     renderRot.vs[0].y.raw() * m_camY +
@@ -320,6 +614,8 @@ void RoomScene::frame() {
                     renderRot.vs[2].y.raw() * m_camY +
                     renderRot.vs[2].z.raw() * m_camZ) >> 12);
 
+    // Write camera view matrix to GTE (used by room rendering)
+    psyqo::GTE::writeUnsafe<psyqo::GTE::PseudoRegister::Rotation>(renderRot);
     psyqo::GTE::write<psyqo::GTE::Register::TRX, psyqo::GTE::Unsafe>(
         static_cast<uint32_t>(tx));
     psyqo::GTE::write<psyqo::GTE::Register::TRY, psyqo::GTE::Unsafe>(
@@ -333,13 +629,18 @@ void RoomScene::frame() {
     auto& ot = m_ots[m_parity];
     ot.clear();
 
-    // Render all chunks (skip if still loading or no data)
+    // Render room chunks (GTE has camera matrix)
     if (!m_loading && m_prm) {
         const auto* hdr = PRM::header(m_prm);
         const auto* cdescs = PRM::chunks(m_prm);
         for (int ci = 0; ci < hdr->num_chunks; ci++) {
             renderChunk(cdescs[ci]);
         }
+    }
+
+    // Render skeleton overlay (reloads GTE per limb)
+    if (m_skelVisible && m_skelLoaded) {
+        renderSkeleton(renderRot, tx, ty, tz);
     }
 
     // Submit: clear screen + ordered geometry
@@ -360,6 +661,18 @@ void RoomScene::frame() {
             ROOM_NAMES[m_roomIdx], hdr->num_verts, hdr->num_tris);
     } else {
         app.m_font.printf(gpu(), {{.x = 8, .y = 8}}, white, "No room data (buf=%d)", m_roomBuf.size());
+    }
+
+    // Skeleton HUD
+    if (m_skelVisible && m_skelLoaded) {
+        const auto* shdr = SKM::header(m_skm);
+        const auto* ad = &SKM::animDescs(m_skm)[m_animIdx];
+        psyqo::Color cyan{{.r = 100, .g = 255, .b = 255}};
+        app.m_font.printf(gpu(), {{.x = 8, .y = SCREEN_H - 16}}, cyan,
+            "SKEL anim:%d/%d f:%d/%d %s",
+            m_animIdx + 1, shdr->num_anims,
+            m_animFrame + 1, ad->frame_count,
+            m_animPaused ? "||" : ">");
     }
 }
 

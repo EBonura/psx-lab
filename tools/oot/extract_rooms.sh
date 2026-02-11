@@ -40,3 +40,14 @@ done
 
 echo "Done. Extracted rooms to $OUTDIR:"
 ls -lh "$OUTDIR"/*.prm 2>/dev/null
+
+# Extract Link's skeletal mesh + animations
+echo ""
+echo "=== Extracting Link skeleton ==="
+SKEL_OUT="$SCRIPT_DIR/../../data/oot/link.skm"
+python3 "$SCRIPT_DIR/extract_skeleton.py" "$ROM" --skm "$SKEL_OUT" || {
+    echo "  [WARN] Failed to extract skeleton"
+}
+if [ -f "$SKEL_OUT" ]; then
+    ls -lh "$SKEL_OUT"
+fi
