@@ -25,6 +25,7 @@
 #include "psyqo/ordering-table.hh"
 #include "psyqo/primitives/common.hh"
 #include "psyqo/primitives/misc.hh"
+#include "psyqo/primitives/quads.hh"
 #include "psyqo/primitives/triangles.hh"
 #include "psyqo/scene.hh"
 #include "psyqo/simplepad.hh"
@@ -130,10 +131,16 @@ class RoomScene final : public psyqo::Scene {
     bool m_needUpload = false;
     bool m_selectHeld = false;
 
+    // Debug texture grid
+    bool m_debugView = false;
+    bool m_startHeld = false;
+    eastl::array<psyqo::Fragments::SimpleFragment<psyqo::Prim::TexturedQuad>, VramAlloc::MAX_TEXTURES> m_debugQuads[2];
+
     void loadRoom(int idx);
     void uploadTextures();
     void renderChunk(const PRM::ChunkDesc& chunk);
     void transformVertices(const PRM::Pos* pos, int count);
+    void renderDebugGrid();
 };
 
 OotApp app;
@@ -251,6 +258,13 @@ void RoomScene::frame() {
         loadRoom(next);
     }
     m_selectHeld = selectNow;
+
+    // Debug view toggle: Start button (debounced)
+    bool startNow = app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Start);
+    if (startNow && !m_startHeld) m_debugView = !m_debugView;
+    m_startHeld = startNow;
+
+    if (m_debugView) { renderDebugGrid(); return; }
 
     // Rotation
     if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Left))  m_camRotY -= 0.02_pi;
@@ -397,6 +411,99 @@ void RoomScene::transformVertices(const PRM::Pos* pos, int count) {
     }
 }
 
+// ── Debug texture grid ──────────────────────────────────────────────────
+
+void RoomScene::renderDebugGrid() {
+    gpu().waitChainIdle();
+    m_parity = gpu().getParity();
+    auto& ot = m_ots[m_parity];
+    ot.clear();
+
+    if (m_prm) {
+        const auto* hdr = PRM::header(m_prm);
+        const auto* descs = PRM::texDescs(m_prm);
+        int numTex = hdr->num_textures;
+        if (numTex > VramAlloc::MAX_TEXTURES) numTex = VramAlloc::MAX_TEXTURES;
+
+        constexpr int COLS = 8;
+        constexpr int CELL_W = 40;
+        constexpr int CELL_H = 52;
+        constexpr int QUAD_SZ = 36;
+        constexpr int16_t TOP_Y = 20;
+
+        for (int i = 0; i < numTex; i++) {
+            int col = i % COLS;
+            int row = i / COLS;
+            int16_t cx = static_cast<int16_t>(col * CELL_W + (CELL_W - QUAD_SZ) / 2);
+            int16_t cy = static_cast<int16_t>(TOP_Y + row * CELL_H);
+
+            const auto& td = descs[i];
+            const auto& ti = s_vramAlloc.info(i);
+
+            auto& frag = m_debugQuads[m_parity][i];
+            auto& q = frag.primitive;
+            q.setColor(psyqo::Color{{.r = 128, .g = 128, .b = 128}});
+
+            q.pointA.x = cx;            q.pointA.y = cy;
+            q.pointB.x = cx + QUAD_SZ;  q.pointB.y = cy;
+            q.pointC.x = cx;            q.pointC.y = cy + QUAD_SZ;
+            q.pointD.x = cx + QUAD_SZ;  q.pointD.y = cy + QUAD_SZ;
+
+            // UVs covering the full texture
+            uint8_t maxU = static_cast<uint8_t>(td.width > QUAD_SZ ? QUAD_SZ - 1 : td.width - 1);
+            uint8_t maxV = static_cast<uint8_t>(td.height > QUAD_SZ ? QUAD_SZ - 1 : td.height - 1);
+            q.uvA.u = ti.u_off;          q.uvA.v = ti.v_off;
+            q.uvB.u = ti.u_off + maxU;   q.uvB.v = ti.v_off;
+            q.uvC.u = ti.u_off;          q.uvC.v = ti.v_off + maxV;
+            q.uvD.u = ti.u_off + maxU;   q.uvD.v = ti.v_off + maxV;
+
+            q.tpage = ti.tpage;
+            q.clutIndex = ti.clut;
+
+            ot.insert(frag, 1);
+        }
+    }
+
+    // Submit
+    auto& clear = m_clear[m_parity];
+    psyqo::Color bg{{.r = 0x10, .g = 0x10, .b = 0x10}};
+    gpu().getNextClear(clear.primitive, bg);
+    gpu().chain(clear);
+    gpu().chain(ot);
+
+    // Title
+    psyqo::Color white{{.r = 255, .g = 255, .b = 255}};
+    if (m_prm) {
+        const auto* hdr = PRM::header(m_prm);
+        app.m_font.printf(gpu(), {{.x = 4, .y = 4}}, white,
+            "[%d/%d] %s  TEX:%d", m_roomIdx + 1, NUM_ROOMS,
+            ROOM_NAMES[m_roomIdx], hdr->num_textures);
+
+        // Per-texture index labels
+        const auto* descs = PRM::texDescs(m_prm);
+        int numTex = hdr->num_textures;
+        if (numTex > VramAlloc::MAX_TEXTURES) numTex = VramAlloc::MAX_TEXTURES;
+        constexpr int COLS = 8;
+        constexpr int CELL_W = 40;
+        constexpr int CELL_H = 52;
+        constexpr int QUAD_SZ = 36;
+        constexpr int16_t TOP_Y = 20;
+
+        psyqo::Color gray{{.r = 160, .g = 160, .b = 160}};
+        for (int i = 0; i < numTex; i++) {
+            int col = i % COLS;
+            int row = i / COLS;
+            int16_t lx = static_cast<int16_t>(col * CELL_W + 2);
+            int16_t ly = static_cast<int16_t>(TOP_Y + row * CELL_H + QUAD_SZ + 2);
+            const auto& td = descs[i];
+            app.m_font.printf(gpu(), {{.x = lx, .y = ly}}, gray,
+                "%d %dx%d", i, td.width, td.height);
+        }
+    } else {
+        app.m_font.printf(gpu(), {{.x = 4, .y = 4}}, white, "No room data");
+    }
+}
+
 // ── Render one chunk ─────────────────────────────────────────────────────
 
 void RoomScene::renderChunk(const PRM::ChunkDesc& chunk) {
@@ -453,13 +560,16 @@ void RoomScene::renderChunk(const PRM::ChunkDesc& chunk) {
         p.setColorC(neutral);
 
         // Per-triangle texture lookup
+        // Mask UVs to texture bounds before adding VRAM offset —
+        // OoT UVs can exceed texture size (tiling), which on PS1
+        // would read into neighboring textures in the page.
         const auto& ti = s_vramAlloc.info(idx.tex_id);
-        p.uvA.u = uv[idx.v0].u + ti.u_off;
-        p.uvA.v = uv[idx.v0].v + ti.v_off;
-        p.uvB.u = uv[idx.v1].u + ti.u_off;
-        p.uvB.v = uv[idx.v1].v + ti.v_off;
-        p.uvC.u = uv[idx.v2].u + ti.u_off;
-        p.uvC.v = uv[idx.v2].v + ti.v_off;
+        p.uvA.u = (uv[idx.v0].u & ti.u_mask) + ti.u_off;
+        p.uvA.v = (uv[idx.v0].v & ti.v_mask) + ti.v_off;
+        p.uvB.u = (uv[idx.v1].u & ti.u_mask) + ti.u_off;
+        p.uvB.v = (uv[idx.v1].v & ti.v_mask) + ti.v_off;
+        p.uvC.u = (uv[idx.v2].u & ti.u_mask) + ti.u_off;
+        p.uvC.v = (uv[idx.v2].v & ti.v_mask) + ti.v_off;
 
         p.tpage = ti.tpage;
         p.clutIndex = ti.clut;
