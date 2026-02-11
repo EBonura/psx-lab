@@ -5,9 +5,15 @@
 *.ps-exe
 release/
 
-# OoT — generated asset files (extracted from user-provided ROM, never commit)
+# OoT — extracted game data (from user-provided ROM, never commit)
+data/
 src/oot/mesh_data.h
 *.prm
+*.skm
 *.z64
 *.n64
 *.v64
+*.zip
+
+# Python
+__pycache__/

@@ -13,6 +13,7 @@
     <directory_tree>
       <file name="SYSTEM.CNF" source="SYSTEM.CNF"/>
       <file name="OOT.EXE"    source="../../src/oot/oot.ps-exe"/>
+      <file name="LINK.SKM"   source="../../data/oot/link.skm"/>
       <dir name="ROOMS">
         <file name="YDAN_0.PRM"   source="../../data/oot/rooms/ydan_room_0.prm"/>
         <file name="YDAN_1.PRM"   source="../../data/oot/rooms/ydan_room_1.prm"/>
