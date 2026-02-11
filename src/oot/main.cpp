@@ -115,8 +115,8 @@ void RoomScene::frame() {
     if (m_camRotY < 0.0_pi)  m_camRotY += 2.0_pi;
     if (m_camRotY >= 2.0_pi) m_camRotY -= 2.0_pi;
 
-    if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Up))   m_camRotX -= 0.01_pi;
-    if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Down)) m_camRotX += 0.01_pi;
+    if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Up))   m_camRotX += 0.01_pi;
+    if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::Down)) m_camRotX -= 0.01_pi;
     if (m_camRotX < 0.02_pi) m_camRotX = psyqo::Angle(0.02_pi);
     if (m_camRotX > 0.45_pi) m_camRotX = psyqo::Angle(0.45_pi);
 
@@ -132,7 +132,7 @@ void RoomScene::frame() {
     auto rotY = psyqo::SoftMath::generateRotationMatrix33(
         m_camRotY, psyqo::SoftMath::Axis::Y, app.m_trig);
     auto rotX = psyqo::SoftMath::generateRotationMatrix33(
-        -m_camRotX, psyqo::SoftMath::Axis::X, app.m_trig);
+        m_camRotX, psyqo::SoftMath::Axis::X, app.m_trig);
     psyqo::Matrix33 viewRot;
     psyqo::SoftMath::multiplyMatrix33(rotY, rotX, &viewRot);
 
