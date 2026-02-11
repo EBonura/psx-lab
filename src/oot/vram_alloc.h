@@ -61,12 +61,29 @@ class Allocator {
         int16_t vw = (format == 0) ? (texel_w / 4) : (texel_w / 2);
         int16_t vh = static_cast<int16_t>(texel_h);
 
-        // Strip-pack: try current row
-        if (m_texCurX + vw > TEX_X1) {
-            // Wrap to next row
-            m_texCurY += m_texRowH;
-            m_texCurX = TEX_X0;
-            m_texRowH = 0;
+        // TPage-aware strip packing.
+        // PS1 textures must not straddle a texture page boundary:
+        //   4-bit pages span 64 VRAM pixels (256 texels)
+        //   8-bit pages span 128 VRAM pixels (256 texels)
+        // TPage base is always at a multiple of 64 VRAM pixels.
+        int16_t page_span = (format == 0) ? 64 : 128;
+
+        auto fitsCurrent = [&](int16_t x) {
+            return (x % 64) + vw <= page_span && x + vw <= TEX_X1;
+        };
+
+        // Row wrap if we can't fit at all on this row
+        if (!fitsCurrent(m_texCurX)) {
+            // Try next 64-px page boundary on same row
+            int16_t next = static_cast<int16_t>(((m_texCurX + 63) / 64) * 64);
+            if (fitsCurrent(next)) {
+                m_texCurX = next;
+            } else {
+                // Wrap to next row
+                m_texCurY += m_texRowH;
+                m_texCurX = TEX_X0;
+                m_texRowH = 0;
+            }
         }
         if (m_texCurY + vh > TEX_Y1) return -1;  // out of space
 

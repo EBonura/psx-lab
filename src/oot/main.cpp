@@ -285,19 +285,26 @@ void RoomScene::frame() {
     if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::L2)) m_camY += VERT_SPEED;
     if (app.m_pad.isButtonPressed(Pad::Pad1, Pad::Button::R2)) m_camY -= VERT_SPEED;
 
-    // Write rotation to GTE
-    psyqo::GTE::writeUnsafe<psyqo::GTE::PseudoRegister::Rotation>(viewRot);
+    // Negate Y row: OoT is Y-up, PS1 screen Y goes down.
+    // Movement uses viewRot (world space), rendering uses flipped matrix.
+    psyqo::Matrix33 renderRot = viewRot;
+    renderRot.vs[1].x = -renderRot.vs[1].x;
+    renderRot.vs[1].y = -renderRot.vs[1].y;
+    renderRot.vs[1].z = -renderRot.vs[1].z;
 
-    // Translation = -R * camPos
-    int32_t tx = -((viewRot.vs[0].x.raw() * m_camX +
-                    viewRot.vs[0].y.raw() * m_camY +
-                    viewRot.vs[0].z.raw() * m_camZ) >> 12);
-    int32_t ty = -((viewRot.vs[1].x.raw() * m_camX +
-                    viewRot.vs[1].y.raw() * m_camY +
-                    viewRot.vs[1].z.raw() * m_camZ) >> 12);
-    int32_t tz = -((viewRot.vs[2].x.raw() * m_camX +
-                    viewRot.vs[2].y.raw() * m_camY +
-                    viewRot.vs[2].z.raw() * m_camZ) >> 12);
+    // Write Y-flipped rotation to GTE
+    psyqo::GTE::writeUnsafe<psyqo::GTE::PseudoRegister::Rotation>(renderRot);
+
+    // Translation = -renderRot * camPos
+    int32_t tx = -((renderRot.vs[0].x.raw() * m_camX +
+                    renderRot.vs[0].y.raw() * m_camY +
+                    renderRot.vs[0].z.raw() * m_camZ) >> 12);
+    int32_t ty = -((renderRot.vs[1].x.raw() * m_camX +
+                    renderRot.vs[1].y.raw() * m_camY +
+                    renderRot.vs[1].z.raw() * m_camZ) >> 12);
+    int32_t tz = -((renderRot.vs[2].x.raw() * m_camX +
+                    renderRot.vs[2].y.raw() * m_camY +
+                    renderRot.vs[2].z.raw() * m_camZ) >> 12);
 
     psyqo::GTE::write<psyqo::GTE::Register::TRX, psyqo::GTE::Unsafe>(
         static_cast<uint32_t>(tx));
